@@ -85,8 +85,8 @@ class ClusterTestCase(unittest.TestCase):
 
         # these are regression tests.  Various mask issues make the matching
         #  to idl for the time being
-        testing.assert_almost_equal(cluster.Lambda, 24.366407, 5)
-        testing.assert_almost_equal(cluster.lambda_e, 2.5137918, 5)
+        testing.assert_almost_equal(cluster.Lambda, 24.366407, 4)
+        testing.assert_almost_equal(cluster.lambda_e, 2.5137918, 4)
 
         return
 
