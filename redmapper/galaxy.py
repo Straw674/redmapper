@@ -135,10 +135,11 @@ class GalaxyCatalog(Catalog):
             raise ValueError("Border must be >= 0.0.")
         # ensure that nside is valid, and hpix is within range (if necessary)
         if nside > 0:
+            npix = hpg.nside_to_npixel(int(nside))
             if len(_hpix) > 0:
                 for _hp in _hpix:
-                    if _hp < 0 or _hp >= hpg.nside_to_npixel(nside):
-                        raise ValueError("hpix %d is out of range." % (hp))
+                    if (_hp < 0) or (_hp >= npix):
+                        raise ValueError("hpix %d is out of range." % (_hp))
 
         if border > 0.0 and len(_hpix) > 0:
             if len(_hpix) != 1:
