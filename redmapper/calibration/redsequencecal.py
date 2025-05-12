@@ -31,7 +31,7 @@ class RedSequenceCalibrator(object):
     mag_err: magnitude error array
     """
 
-    def __init__(self, conf, galfile):
+    def __init__(self, conf, galfile, rng=None):
         """
         Instantiate a RedSequenceCalibrator.
 
@@ -41,12 +41,18 @@ class RedSequenceCalibrator(object):
            Configuration yaml file or configuration object
         galfile: `str`
            Galaxy file with the required fields
+        rng : `np.random.RandomState`, optional
+            Random number generator.
         """
 
         if not isinstance(conf, Configuration):
             self.config = Configuration(conf)
         else:
             self.config = conf
+
+        if rng is None:
+            rng = np.random.RandomState(self.config.randomseed)
+        self.rng = rng
 
         self._galfile = galfile
 
@@ -1182,7 +1188,7 @@ class RedSequenceCalibrator(object):
 
                 barr = np.zeros(ntrial)
                 for t in range(ntrial):
-                    r = np.random.choice(dzuse[use], size=use.size, replace=True)
+                    r = self.rng.choice(dzuse[use], size=use.size, replace=True)
                     barr[t] = np.median(r)
 
                 # Error on median as determined from bootstrap resampling

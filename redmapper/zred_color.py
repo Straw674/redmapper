@@ -16,7 +16,7 @@ class ZredColor(object):
     """
 
     def __init__(self, zredstr, sigint=0.001, do_correction=True,
-                 use_photoerr=True, zrange=None):
+                 use_photoerr=True, zrange=None, rng=None):
         """
         Instantiate a ZredColor object.
 
@@ -52,6 +52,10 @@ class ZredColor(object):
                           (self.zredstr.z < self.zrange[1]))
             self.zbinstart = u[0]
             self.zbinstop = u[-1]
+
+        if rng is None:
+            rng = np.random.RandomState()
+        self.rng = rng
 
     def compute_zreds(self, galaxies):
         """
@@ -231,7 +235,8 @@ class ZredColor(object):
             zred_samp = sample_from_pdf(pdf,
                                         [self.zredstr.z[gdzbins[0]], self.zredstr.z[gdzbins[-1]]],
                                         0.0001,
-                                        galaxy.zred_samp.size)
+                                        galaxy.zred_samp.size,
+                                        self.rng)
 
         # And apply the corrections
         zred2 = np.zeros(1) + zred

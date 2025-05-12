@@ -17,7 +17,7 @@ class Centering(object):
     Generic centering base class for computing cluster centers.
     """
 
-    def __init__(self, cluster, zlambda_corr=None):
+    def __init__(self, cluster, zlambda_corr=None, rng=None):
         """
         Instantiate a Centering object for a cluster.
 
@@ -27,7 +27,14 @@ class Centering(object):
            Cluster to compute centering
         zlambda_corr: `redmapper.ZlambdaCorrectionPar`, optional
            z_lambda correction parameters, if desired.  Default is None.
+        rng : `np.random.RandomState`, optional
+            Random number generator.
         """
+
+        if rng is None:
+            rng = np.random.RandomState()
+        self.rng = rng
+
         # Reference to the cluster; may need to copy
         self.cluster = cluster
 
@@ -375,8 +382,8 @@ class CenteringRandom(Centering):
         success: `bool`
            True when a center is successfully found. (Always True).
         """
-        r = self.cluster.r_lambda * np.sqrt(np.random.random(size=1))
-        phi = 2. * np.pi * np.random.random(size=1)
+        r = self.cluster.r_lambda * np.sqrt(self.rng.random(size=1))
+        phi = 2. * np.pi * self.rng.random(size=1)
 
         x = r * np.cos(phi) / (self.cluster.mpc_scale)
         y = r * np.sin(phi) / (self.cluster.mpc_scale)
@@ -431,7 +438,7 @@ class CenteringRandomSatellite(Centering):
         cdf = np.cumsum(pdf, dtype=np.float64)
         cdfi = (cdf * st.size).astype(np.int32)
 
-        rand = (np.random.uniform(size=1) * st.size).astype(np.int32)
+        rand = (self.rng.uniform(size=1) * st.size).astype(np.int32)
         ind = np.where(cdfi >= rand[0])[0][0]
         maxind = st[ind]
 

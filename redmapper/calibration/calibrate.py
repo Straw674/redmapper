@@ -52,6 +52,8 @@ class RedmapperCalibrator(object):
         Run the red-sequence calibration.
         """
 
+        rng = np.random.RandomState(seed=self.config.randomseed)
+
         # Select the red galaxies to start
         self.config.redgalfile = self.config.redmapper_filename('zspec_redgals')
         self.config.redgalmodelfile = self.config.redmapper_filename('zspec_redgals_model')
@@ -81,7 +83,7 @@ class RedmapperCalibrator(object):
         else:
             self.config.logger.info("Constructing maskgals...")
             # This will generate the maskgalfile if it isn't found
-            mask = get_mask(self.config, include_maskgals=False)
+            mask = get_mask(self.config, include_maskgals=False, rng=rng)
             mask.gen_maskgals(self.config.maskgalfile)
 
         # Do the color-lambda training.
@@ -104,7 +106,7 @@ class RedmapperCalibrator(object):
             self.config.logger.info("Generating spectroscopic seeds (training spec)...")
             sss = SelectSpecSeeds(self.config)
             sss.run(usetrain=True)
-        calib_iteration = RedmapperCalibrationIteration(self.config)
+        calib_iteration = RedmapperCalibrationIteration(self.config, rng=rng)
 
         for iteration in range(1, self.config.calib_niter + 1):
             # Run the calibration iteration
@@ -119,7 +121,7 @@ class RedmapperCalibrator(object):
             else:
                 self.config.logger.info("Preparing members for next calibration...")
                 ## FIXME
-                prep_members = PrepMembers(self.config)
+                prep_members = PrepMembers(self.config, rng=rng)
                 prep_members.run('z_init')
 
             # Reset outbase here
@@ -284,7 +286,7 @@ class RedmapperCalibrationIteration(object):
     Class to perform a single iteration of the redmapper calibration.
     """
 
-    def __init__(self, config):
+    def __init__(self, config, rng=None):
         """
         Instantiate a RedmapperCalibrationIteration
 
@@ -294,6 +296,10 @@ class RedmapperCalibrationIteration(object):
            Configuration object
         """
         self.config = config
+
+        if rng is None:
+            rng = np.random.RandomState(self.config.randomseed)
+        self.rng = rng
 
     def run(self, iteration):
         """
@@ -320,7 +326,7 @@ class RedmapperCalibrationIteration(object):
             self.config.logger.info("%s already there.  Skipping..." % (self.config.parfile))
         else:
             self.config.logger.info("Running red sequence calibration...")
-            redsequencecal = RedSequenceCalibrator(self.config, self.config.zmemfile)
+            redsequencecal = RedSequenceCalibrator(self.config, self.config.zmemfile, rng=self.rng)
             redsequencecal.run()
 
         # Make the "sz" file (I think maybe I can skip this)
@@ -485,7 +491,8 @@ class RedmapperCalibrationIteration(object):
             self.config.logger.info("Calibrating Wcen")
             wc = WcenCalibrator(self.config, iteration,
                                 randcatfile=catfile_for_rand_calib,
-                                randsatcatfile=catfile_for_randsat_calib)
+                                randsatcatfile=catfile_for_randsat_calib,
+                                rng=self.rng)
             wc.run()
 
         self.config.set_wcen_vals()

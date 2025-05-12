@@ -198,6 +198,7 @@ class Configuration(object):
     seedfile = ConfigField()
     zmemfile = ConfigField()
     redmagicfile = ConfigField()
+    randomseed = ConfigField(default=123456, required=True)
 
     calib_nproc = ConfigField(default=1, required=True)
     calib_run_nproc = ConfigField(default=1, required=True)

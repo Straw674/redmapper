@@ -466,7 +466,7 @@ def calc_theta_i(mag, mag_err, maxmag, limmag):
     return theta_i
 
 def apply_errormodels(maskgals, mag_in, b=None, err_ratio=1.0, fluxmode=False,
-    nonoise=False, inlup=False, lnscat=None, sigma0=0.0):
+                      nonoise=False, inlup=False, lnscat=None, sigma0=0.0, rng=None):
     """
     Apply error models to a set of magnitudes.
 
@@ -492,6 +492,8 @@ def apply_errormodels(maskgals, mag_in, b=None, err_ratio=1.0, fluxmode=False,
        Default is None (no ln(scatter) term).
     sigma0: `float`, optional
        Additional noise floor term to apply.  Default is 0.0 (no floor).
+    rng : `np.random.RandomState`, optional
+        Random number generator.
 
     Returns
     -------
@@ -500,6 +502,9 @@ def apply_errormodels(maskgals, mag_in, b=None, err_ratio=1.0, fluxmode=False,
     mag_err: `np.array`
        Array of magnitude/luptitude/flux errors
     """
+    if rng is None:
+        rng = np.random.RandomState()
+
     f1lim = 10.**((maskgals.limmag - maskgals.zp[0])/(-2.5))
     fsky1 = (((f1lim**2.) * maskgals.exptime)/(maskgals.nsig[0]**2.) - f1lim)
     fsky1 = np.clip(fsky1, 0.001, None)
@@ -516,12 +521,12 @@ def apply_errormodels(maskgals, mag_in, b=None, err_ratio=1.0, fluxmode=False,
         noise = np.sqrt(noise**2. + ((np.log(10.)/2.5) * sigma0 * tflux)**2.)
 
     if lnscat is not None:
-        noise = np.exp(np.log(noise) + lnscat * np.random.normal(size=noise.size))
+        noise = np.exp(np.log(noise) + lnscat * rng.normal(size=noise.size))
 
     if nonoise:
         flux = tflux
     else:
-        flux = tflux + noise*random.standard_normal(mag_in.size)
+        flux = tflux + noise * rng.standard_normal(mag_in.size)
 
     if fluxmode:
         mag = flux/maskgals.exptime
@@ -867,7 +872,7 @@ def make_nodes(zrange, nodesize, maxnode=None):
     if ((_maxnode - nodes.max()) > (nodesize / 2. + 0.01)):
         # one more node!
         nodes = np.append(nodes, _maxnode)
-    elif ~np.allclose(np.max(nodes), _maxnode):
+    elif not np.allclose(np.max(nodes), _maxnode):
         nodes[-1] = _maxnode
 
     # and finally check if maxnode was lower
@@ -880,7 +885,7 @@ def make_nodes(zrange, nodesize, maxnode=None):
 ## Sample from a pdf
 #######################
 
-def sample_from_pdf(f, ran, step, nsamp, **kwargs):
+def sample_from_pdf(f, ran, step, nsamp, rng, **kwargs):
     """
     Sample from a PDF described by a function f.
 
@@ -909,7 +914,7 @@ def sample_from_pdf(f, ran, step, nsamp, **kwargs):
     cdf = np.cumsum(pdf, dtype=np.float64)
     cdfi = (cdf * x.size).astype(np.int32)
 
-    rand = (np.random.uniform(size=nsamp) * x.size).astype(np.int32)
+    rand = (rng.uniform(size=nsamp) * x.size).astype(np.int32)
 
     samples = np.zeros(nsamp)
     for i in range(nsamp):

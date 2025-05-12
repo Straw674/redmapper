@@ -21,7 +21,7 @@ class GenerateRandoms(object):
     Class to generate redmapper raw randoms using a redmapper volume limit mask.
     """
 
-    def __init__(self, config, vlim_mask=None, vlim_lstar=None, redmapper_cat=None):
+    def __init__(self, config, vlim_mask=None, vlim_lstar=None, redmapper_cat=None, rng=None):
         """
         Instantiate a GenerateRandoms object, to generate seed randoms for redmapper.
 
@@ -34,8 +34,14 @@ class GenerateRandoms(object):
            Volume limit lstar, or else it is from config.vlim_lstar
         redmapper_cat : `redmapper.ClusterCatalog`, optional
            Redmapper catalog, or else it will be read from config.catfile
+        rng : `np.random.RandomState`, optional
+            Random number generator.
         """
         self.config = config
+
+        if rng is None:
+            rng = np.random.RandomState(self.config.randomseed)
+        self.rng = rng
 
         if self.config.randfile is None:
             raise RuntimeError("Must set randfile in config to run GenerateRandoms.")
@@ -67,7 +73,7 @@ class GenerateRandoms(object):
            Pre-set random number generator.  Default is None.
         """
         if rng is None:
-            rng = np.random.RandomState()
+            rng = self.rng
 
         min_gen = 10000
         max_gen = 1000000

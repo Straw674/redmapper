@@ -14,7 +14,7 @@ class RedmagicGenerateRandoms(object):
     Class to generate redmagic randoms from a redmagic volume limit mask.
     """
 
-    def __init__(self, config, vlim_mask_or_file, redmagic_cat_or_file):
+    def __init__(self, config, vlim_mask_or_file, redmagic_cat_or_file, rng=None):
         """
         Instantiate a RedmagicGenerateRandoms object
 
@@ -27,9 +27,15 @@ class RedmagicGenerateRandoms(object):
            a volume-limit mask.
         redmagic_cat_or_file: `str` or `redmapper.Catalog`
            Name of redmagic file or redmagic catalog.
+        rng : `np.random.RandomState`, optional
+            Random number generator.
         """
 
         self.config = config
+
+        if rng is None:
+            rng = np.random.RandomState(self.config.randomseed)
+        self.rng = rng
 
         if isinstance(vlim_mask_or_file, VolumeLimitMask):
             self.vlim_mask = vlim_mask_or_file
@@ -62,7 +68,7 @@ class RedmagicGenerateRandoms(object):
            Pre-set random number generator.  Default is None.
         """
         if rng is None:
-            rng = np.random.RandomState()
+            rng = self.rng
 
         if not clobber and os.path.isfile(filename):
             raise RuntimeError("Random file %s already exists and clobber is False." % (filename))

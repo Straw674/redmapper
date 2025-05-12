@@ -26,7 +26,7 @@ class Mask(object):
     #   We need a routine that looks at the mask_mode and instantiates
     #   the correct type.  How is this typically done?
 
-    def __init__(self, config, include_maskgals=True):
+    def __init__(self, config, include_maskgals=True, rng=None):
         """
         Instantiate a placeholder geometry mask that will describe all galaxies
         as in the mask.
@@ -37,12 +37,18 @@ class Mask(object):
            Configuration object
         include_maskgals: `bool`, optional
            Also read in the maskgals.  Default is True.
+        rng : `np.random.RandomState`, optional
+            Random state to use.
         """
         self.config = config
 
         # This will raise if maskgals aren't available
         if include_maskgals:
             self.read_maskgals(config.maskgalfile)
+
+        if rng is None:
+            rng = np.random.RandomState(seed=self.config.randomseed)
+        self.rng = rng
 
     def compute_radmask(self, ra, dec):
         """
@@ -108,10 +114,10 @@ class Mask(object):
         """
 
         if maskgal_index is None:
-            maskgal_index = np.random.choice(self.config.maskgal_nsamples)
+            maskgal_index = self.rng.choice(self.config.maskgal_nsamples)
 
         self.maskgals = self.maskgals_all[maskgal_index * self.config.maskgal_ngals:
-                                              (maskgal_index + 1) * self.config.maskgal_ngals]
+                                          (maskgal_index + 1) * self.config.maskgal_ngals]
 
         return maskgal_index
 
@@ -176,28 +182,28 @@ class Mask(object):
         # Generate chisq
         maskgals.chisq = sample_from_pdf(chisq_pdf, [0.0, self.config.chisq_max],
                                          self.config.chisq_max / 10000.,
-                                         maskgals.size, k=ncol)
+                                         maskgals.size, self.rng, k=ncol)
         # Generate mstar
         maskgals.m = sample_from_pdf(schechter_pdf,
                                      [-2.5*np.log10(10.0),
                                        -2.5*np.log10(self.config.lval_reference) + self.config.maskgal_dmag_extra],
-                                     0.002, maskgals.size,
+                                     0.002, maskgals.size, self.rng,
                                      alpha=self.config.calib_lumfunc_alpha, mstar=0.0)
         # Generate nfw(r)
         maskgals.r = sample_from_pdf(nfw_pdf,
                                      [0.001, maxrad],
-                                     0.001, maskgals.size, radfactor=True)
+                                     0.001, maskgals.size, self.rng, radfactor=True)
 
         # Generate phi
-        maskgals.phi = 2. * np.pi * np.random.random(size=maskgals.size)
+        maskgals.phi = 2. * np.pi * self.rng.random(size=maskgals.size)
 
         # Precompute x/y
         maskgals.x = maskgals.r * np.cos(maskgals.phi)
         maskgals.y = maskgals.r * np.sin(maskgals.phi)
 
         # And uniform x/y
-        maskgals.r_uniform = self.config.bkg_local_annuli[1] * np.sqrt(np.random.uniform(size=maskgals.size))
-        theta_new = np.random.uniform(size=maskgals.size)*2*np.pi
+        maskgals.r_uniform = self.config.bkg_local_annuli[1] * np.sqrt(self.rng.uniform(size=maskgals.size))
+        theta_new = self.rng.uniform(size=maskgals.size)*2*np.pi
         maskgals.x_uniform = maskgals.r_uniform*np.cos(theta_new)
         maskgals.y_uniform = maskgals.r_uniform*np.sin(theta_new)
 
@@ -222,7 +228,7 @@ class Mask(object):
         maskgals.lumwt = maskgals.lum_pdf / n
 
         # zred weight
-        maskgals.dzred = np.random.normal(loc=0.0, scale=self.config.maskgal_zred_err, size=maskgals.size)
+        maskgals.dzred = self.rng.normal(loc=0.0, scale=self.config.maskgal_zred_err, size=maskgals.size)
         maskgals.zwt = (1. / (np.sqrt(2.*np.pi) * self.config.maskgal_zred_err)) * np.exp(-(maskgals.dzred**2.) / (2.*self.config.maskgal_zred_err**2.))
 
         # And we need the radial function for each set of samples
@@ -301,7 +307,7 @@ class Mask(object):
         self.maskgals.refmag = mag_in
 
         if self.maskgals.limmag[0] > 0.0:
-            mag, mag_err = apply_errormodels(self.maskgals, mag_in)
+            mag, mag_err = apply_errormodels(self.maskgals, mag_in, rng=self.rng)
 
             self.maskgals.refmag_obs = mag
             self.maskgals.refmag_obs_err = mag_err
@@ -400,11 +406,11 @@ class HPMask(Mask):
         fracgood[gd] = self.sparse_fracgood.get_values_pos(ras[gd], decs[gd], lonlat=True)
 
         radmask = np.zeros(ras.size, dtype=bool)
-        radmask[np.where(fracgood > np.random.rand(ras.size))] = True
+        radmask[np.where(fracgood > self.rng.rand(ras.size))] = True
         return radmask
 
 
-def get_mask(config, include_maskgals=True):
+def get_mask(config, include_maskgals=True, rng=None):
     """
     Convenience function to look at a config file and load the appropriate type of mask.
 
@@ -414,16 +420,20 @@ def get_mask(config, include_maskgals=True):
     ----------
     config: `redmapper.Configuration`
        Configuration object
+    include_maskgals : `bool`, optional
+        Include maskgals in the mask?
+    rng : `np.random.RandomState`, optional
+        Use this RandomState?
     """
 
     if config.mask_mode == 0:
         # This is no mask!
         # Return a bare object with maskgal functionality
-        return Mask(config, include_maskgals=include_maskgals)
+        return Mask(config, include_maskgals=include_maskgals, rng=rng)
     elif config.mask_mode == 3:
         # This is a healpix mask
         #  (don't ask about 1 and 2)
-        return HPMask(config, include_maskgals=include_maskgals)
+        return HPMask(config, include_maskgals=include_maskgals, rng=rng)
 
 def convert_maskfile_to_healsparse(maskfile, healsparsefile, nsideCoverage, clobber=False):
     """
