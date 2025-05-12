@@ -24,9 +24,7 @@ class ClusterTestCase(unittest.TestCase):
         Run the ClusterTest
         """
 
-        # all new...
-
-        random.seed(seed=12345)
+        rng = np.random.RandomState(12345)
 
         file_path = 'data_for_tests'
 
@@ -58,7 +56,7 @@ class ClusterTestCase(unittest.TestCase):
         cluster.ra = hdr['RA']
         cluster.dec = hdr['DEC']
 
-        mask = HPMask(cluster.config)
+        mask = HPMask(cluster.config, rng=rng)
         maskgal_index = mask.select_maskgals_sample(maskgal_index=0)
         mask.set_radmask(cluster)
 
@@ -78,15 +76,12 @@ class ClusterTestCase(unittest.TestCase):
         # this is cheating here...
         to_test, = np.where((cluster.neighbors.refmag < cluster.bkg.refmagbins[-1]))
 
-        seed = 0
-        random.seed(seed = 0)
-
         richness = cluster.calc_richness(mask)
 
         # these are regression tests.  Various mask issues make the matching
         #  to idl for the time being
-        testing.assert_almost_equal(cluster.Lambda, 24.366407, 4)
-        testing.assert_almost_equal(cluster.lambda_e, 2.5137918, 4)
+        testing.assert_almost_equal(cluster.Lambda, 24.396917, 4)
+        testing.assert_almost_equal(cluster.lambda_e, 2.5160403, 4)
 
         return
 

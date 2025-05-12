@@ -34,16 +34,16 @@ class CenteringCalibratorTestCase(unittest.TestCase):
         config.wcenfile = os.path.join(config.outpath, '%s_testwcen.fit' % (config.d.outbase))
 
         # Get repeatability here
-        random.seed(seed=1000)
+        rng = np.random.RandomState(1000)
 
-        wc = WcenCalibrator(config, 1, randcatfile=randcatfile, randsatcatfile=randsatcatfile)
+        wc = WcenCalibrator(config, 1, randcatfile=randcatfile, randsatcatfile=randsatcatfile, rng=rng)
         wc.run(testing=True)
 
         # check outputs...
 
         # First, the schechter monte carlo.
         # These are very approximate, but checking for any unexpected changes
-        testing.assert_almost_equal(wc.phi1_mmstar_m, -1.13451727, 5)
+        testing.assert_almost_equal(wc.phi1_mmstar_m, -1.1345172724182435, 5)
         testing.assert_almost_equal(wc.phi1_mmstar_slope, -0.37794289, 5)
         testing.assert_almost_equal(wc.phi1_msig_m, 0.49644922, 5)
         testing.assert_almost_equal(wc.phi1_msig_slope, -0.13314551, 5)

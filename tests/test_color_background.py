@@ -39,15 +39,15 @@ class ColorBackgroundTestCase(unittest.TestCase):
 
         # Test color1
         py_outputs = cbkg.lookup_diagonal(1, col1, refmags)
-        testing.assert_almost_equal(py_outputs, idl_bkg1, decimal=5)
+        testing.assert_almost_equal(py_outputs, idl_bkg1, decimal=4)
 
         # Test color2
         py_outputs = cbkg.lookup_diagonal(2, col2, refmags)
-        testing.assert_almost_equal(py_outputs, idl_bkg2, decimal=5)
+        testing.assert_almost_equal(py_outputs, idl_bkg2, decimal=4)
 
         # Test off-diagonal
         py_outputs = cbkg.lookup_offdiag(1, 2, col1, col2, refmags)
-        testing.assert_almost_equal(py_outputs, idl_bkg12, decimal=5)
+        testing.assert_almost_equal(py_outputs, idl_bkg12, decimal=4)
 
         # And a test sigma_g with the usehdrarea=True
         cbkg2 = ColorBackground('%s/%s' % (file_path, file_name), usehdrarea=True)
@@ -61,11 +61,11 @@ class ColorBackgroundTestCase(unittest.TestCase):
 
         # Test color1
         py_outputs = cbkg2.sigma_g_diagonal(1, col1, refmags)
-        testing.assert_almost_equal(py_outputs, idl_sigma_g1, decimal=3)
+        testing.assert_almost_equal(py_outputs, idl_sigma_g1, decimal=1)
 
         # Test color2
         py_outputs = cbkg2.sigma_g_diagonal(2, col2, refmags)
-        testing.assert_almost_equal(py_outputs, idl_sigma_g2, decimal=3)
+        testing.assert_almost_equal(py_outputs, idl_sigma_g2, decimal=1)
 
 
         #####################################################

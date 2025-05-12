@@ -20,6 +20,8 @@ class ApplyErrormodelsTestCase(unittest.TestCase):
         conf_filename = 'testconfig.yaml'
         config = Configuration(file_path + '/' + conf_filename)
 
+        rng = np.random.RandomState(12345)
+
         mask = HPMask(config) #Create the mask
         maskgal_index = mask.select_maskgals_sample()
 
@@ -33,27 +35,26 @@ class ApplyErrormodelsTestCase(unittest.TestCase):
         mag_in[:6]            = np.array([16., 17., 18., 19., 20., 21.])
 
         #test without noise
-        mag, mag_err = apply_errormodels(mask.maskgals, mag_in, nonoise = True)
+        mag, mag_err = apply_errormodels(mask.maskgals, mag_in, nonoise=True, rng=rng)
         idx = np.array([0, 1, 2, 3, 4, 5])
         mag_idl     = np.array([16., 17., 18., 19., 20., 21.])
         mag_err_idl = np.array([0.00602535, 0.0107989, 0.0212915, 0.0463765, 0.108574, 0.264390])
         testing.assert_almost_equal(mag[idx], mag_idl)
         testing.assert_almost_equal(mag_err[idx], mag_err_idl, decimal = 6)
 
-        #test with noise and set seed
-        seed = 0
-        random.seed(seed = seed)
-        mag, mag_err = apply_errormodels(mask.maskgals, mag_in)
+        # Test with noise.
+        mag, mag_err = apply_errormodels(mask.maskgals, mag_in, rng=rng)
 
         idx = np.array([0, 1, 2, 3, 4, 5, 1257, 2333, 3876])
-        mag_test = np.array([15.98942267, 16.99568733, 17.97935868, 
-                             18.90075284, 19.81409659, 21.29508236,  
-                             0.99999373,  1.00000663,  1.00000807])
-        mag_err_test = np.array([5.96693051e-03, 1.07560575e-02, 2.08905241e-02, 
-                                 4.23251692e-02, 9.14877522e-02, 3.46958444e-01,
-                                 5.44154045e-06, 5.44160510e-06, 5.44161230e-06])
+        mag_test = np.array([16.00123414, 16.99484023, 18.01111633,
+                             19.02608362, 19.80514741, 20.68279649,
+                             0.99999688,  0.99999531,  1.00000518])
+        mag_err_test = np.array([6.03219772e-03, 1.07476689e-02, 2.15105938e-02,
+                                 4.75040916e-02, 9.07367637e-02, 1.97407256e-01,
+                                 5.44155623e-06, 5.44154837e-06, 5.44159784e-06])
         testing.assert_almost_equal(mag[idx], mag_test)
         testing.assert_almost_equal(mag_err[idx], mag_err_test)
+
 
 if __name__=='__main__':
     unittest.main()

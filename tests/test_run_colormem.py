@@ -6,7 +6,6 @@ import numpy.testing as testing
 import numpy as np
 import fitsio
 import copy
-from numpy import random
 import time
 import tempfile
 import shutil
@@ -30,12 +29,11 @@ class RunColormemTestCase(unittest.TestCase):
         Run tests of redmapper.RunColormem
         """
 
-        random.seed(seed=12345)
-
         file_path = 'data_for_tests'
         configfile = 'testconfig.yaml'
 
         config = Configuration(os.path.join(file_path, configfile))
+        config.randomseed = 12345
 
         self.test_dir = tempfile.mkdtemp(dir='./', prefix='TestRedmapper-')
         config.outpath = self.test_dir
@@ -63,7 +61,7 @@ class RunColormemTestCase(unittest.TestCase):
 
         mem = fitsio.read(config.zmemfile, ext=1)
         testing.assert_equal(mem.size, 16)
-        testing.assert_array_almost_equal(mem['pcol'][0:3], np.array([0.954449, 0.8386, 0.88328]))
+        testing.assert_array_almost_equal(mem['pcol'][0:3], np.array([0.954449, 0.8386, 0.88328]), 5)
         testing.assert_array_almost_equal(mem['z'][0:3], np.array([0.191797, 0.194327, 0.186235]), 2)
 
     def setUp(self):

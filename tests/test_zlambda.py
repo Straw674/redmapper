@@ -22,7 +22,7 @@ class ZlambdaTestCase(unittest.TestCase):
         """
         Run tests on redmapper.Zlambda
         """
-        random.seed(seed=12345)
+        rng = np.random.RandomState(12345)
 
         file_path = 'data_for_tests'
 
@@ -33,7 +33,7 @@ class ZlambdaTestCase(unittest.TestCase):
         neighbors = GalaxyCatalog.from_fits_file(file_path + '/' + filename)
 
         zred_filename = 'test_dr8_pars.fit'
-        zredstr = RedSequenceColorPar(file_path + '/' + zred_filename,fine = True)
+        zredstr = RedSequenceColorPar(file_path + '/' + zred_filename, fine=True)
 
         bkg_filename = 'test_bkg.fit'
         bkg = Background('%s/%s' % (file_path, bkg_filename))
@@ -48,7 +48,7 @@ class ZlambdaTestCase(unittest.TestCase):
         cluster.dec = hdr['DEC']
 
         #Set up the mask
-        mask = HPMask(cluster.config) #Create the mask
+        mask = HPMask(cluster.config, rng=rng)
         maskgal_index = mask.select_maskgals_sample(maskgal_index=0)
         mask.set_radmask(cluster)
 

@@ -36,7 +36,9 @@ class CenteringTestCase(unittest.TestCase):
 
         # And the meat of it...
 
-        cent = CenteringWcenZred(cluster, zlambda_corr=zlambda_corr)
+        rng = np.random.RandomState(12345)
+
+        cent = CenteringWcenZred(cluster, zlambda_corr=zlambda_corr, rng=rng)
         cent.find_center()
 
         testing.assert_almost_equal(cent.p_cen, tempcat[0]['PCEN'][tempcat[0]['GOOD']], 5)
@@ -59,7 +61,9 @@ class CenteringTestCase(unittest.TestCase):
 
         # And the meat of it...
 
-        cent = CenteringWcenZred(cluster, zlambda_corr=zlambda_corr)
+        rng = np.random.RandomState(12345)
+
+        cent = CenteringWcenZred(cluster, zlambda_corr=zlambda_corr, rng=rng)
         cent.find_center()
 
         testing.assert_almost_equal(cent.p_cen, tempcat[0]['PCEN'][tempcat[0]['GOOD']], 5)
@@ -74,7 +78,9 @@ class CenteringTestCase(unittest.TestCase):
         """
         cluster = self._setup_cluster()
 
-        cent = CenteringBCG(cluster)
+        rng = np.random.RandomState(12345)
+
+        cent = CenteringBCG(cluster, rng=rng)
         cent.find_center()
 
         self.assertEqual(cent.maxind, 72)
@@ -92,7 +98,9 @@ class CenteringTestCase(unittest.TestCase):
         cluster = self._setup_cluster(add_zspec=True)
         cluster.config.centering_use_zspec = True
 
-        cent = CenteringBCG(cluster)
+        rng = np.random.RandomState(12345)
+
+        cent = CenteringBCG(cluster, rng=rng)
         cent.find_center()
 
         self.assertEqual(cent.maxind, 72)
@@ -108,11 +116,11 @@ class CenteringTestCase(unittest.TestCase):
         Test running of CenteringRandom.
         """
 
-        random.seed(seed=12345)
+        rng = np.random.RandomState(12345)
 
         cluster = self._setup_cluster()
 
-        cent = CenteringRandom(cluster)
+        cent = CenteringRandom(cluster, rng=rng)
         cent.find_center()
 
         self.assertEqual(cent.maxind, -1)
@@ -128,11 +136,11 @@ class CenteringTestCase(unittest.TestCase):
         Test running of CenteringRandomSatellite.
         """
 
-        random.seed(seed=12345)
+        rng = np.random.RandomState(12345)
 
         cluster = self._setup_cluster()
 
-        cent = CenteringRandomSatellite(cluster)
+        cent = CenteringRandomSatellite(cluster, rng=rng)
         cent.find_center()
 
         # Confirmed that the distribution is correct, this just checks for regression

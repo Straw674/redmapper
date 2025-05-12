@@ -27,7 +27,7 @@ class ClusterCatalogTestCase(unittest.TestCase):
         Run the ClusterCatalog tests.
         """
 
-        random.seed(seed=12345)
+        rng = np.random.RandomState(12345)
 
         file_path = 'data_for_tests'
         conffile = 'testconfig.yaml'
@@ -42,7 +42,7 @@ class ClusterCatalogTestCase(unittest.TestCase):
         bkg_filename = 'test_bkg.fit'
         bkg = Background('%s/%s' % (file_path, bkg_filename))
 
-        mask = HPMask(config)
+        mask = HPMask(config, rng=rng)
         maskgal_index = mask.select_maskgals_sample(maskgal_index=0)
         depthstr = DepthMap(config)
 
@@ -85,7 +85,7 @@ class ClusterCatalogTestCase(unittest.TestCase):
         testing.assert_equal(c0.scaleval, cat.scaleval[0])
 
         # And make sure the numbers are correct
-        testing.assert_almost_equal(richness, 24.4121723)
+        testing.assert_almost_equal(richness, 24.39691734313965)
 
         # Test creating a cluster catalog with default dtype
         testcat = ClusterCatalog.zeros(10)
