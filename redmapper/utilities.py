@@ -6,7 +6,7 @@
 import numpy as np
 from scipy import special
 from scipy.linalg import solve_banded
-from pkg_resources import resource_filename
+from lsst.resources.packageresource import PackageResourcePath
 import scipy.interpolate as interpolate
 import fitsio
 from scipy.special import erf
@@ -197,14 +197,13 @@ class MStar(object):
         self.survey = survey.strip()
         self.band = band.strip()
 
-        try:
-            self.mstar_file = resource_filename(__name__,'data/mstar/mstar_%s_%s.fit' % (self.survey, self.band))
-        except:
-            raise IOError("Could not find mstar resource mstar_%s_%s.fit" % (self.survey, self.band))
-        try:
-            self._mstar_arr = fitsio.read(self.mstar_file, ext=1, upper=True)
-        except:
-            raise IOError("Could not find mstar file mstar_%s_%s.fit" % (self.survey, self.band))
+        resource = PackageResourcePath(
+            "resource://redmapper/data/mstar/mstar_%s_%s.fit" % (self.survey, self.band),
+        )
+        with resource.as_local() as loc:
+            self.mstar_file = loc.ospath
+
+        self._mstar_arr = fitsio.read(self.mstar_file, ext=1, upper=True)
 
         self._f = CubicSpline(self._mstar_arr['Z'],self._mstar_arr['MSTAR'])
 
@@ -246,17 +245,20 @@ class RedGalInitialColors(object):
         """
 
         from . import Catalog
-        from pkg_resources import resource_filename
-        from pkg_resources import resource_exists
 
         self._template_file = None
 
         module = __name__.split('.')[0]
-        if resource_exists(module, 'data/initcolors/%s' % (redgal_template)):
-            self._template_file = resource_filename(module, 'data/initcolors/%s' % (redgal_template))
-        elif os.path.isfile(redgal_template):
+        resource = PackageResourcePath(
+            "resource://redmapper/data/initcolors/%s" % (redgal_template),
+        )
+        with resource.as_local() as loc:
+            self._template_file = loc.ospath
+
+        if not os.path.isfile(self._template_file):
             self._template_file = os.path.abspath(redgal_template)
-        else:
+
+        if not os.path.isfile(self._template_file):
             raise IOError("Could not find redgal_template file %s in resource or path." % (redgal_template))
 
         self._template = Catalog.from_fits_file(self._template_file, ext=1)
