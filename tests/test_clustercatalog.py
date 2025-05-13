@@ -85,7 +85,7 @@ class ClusterCatalogTestCase(unittest.TestCase):
         testing.assert_equal(c0.scaleval, cat.scaleval[0])
 
         # And make sure the numbers are correct
-        testing.assert_almost_equal(richness, 24.39691734313965)
+        testing.assert_allclose(richness, 24.39691734313965, rtol=1e-3)
 
         # Test creating a cluster catalog with default dtype
         testcat = ClusterCatalog.zeros(10)

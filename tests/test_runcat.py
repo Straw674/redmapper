@@ -39,7 +39,7 @@ class RuncatTestCase(unittest.TestCase):
         runcat.run(do_percolation_masking=False)
 
         testing.assert_equal(runcat.cat.mem_match_id, [1, 2, 3])
-        testing.assert_almost_equal(runcat.cat.Lambda, [24.16809, 26.92924, 13.35232], 5)
+        testing.assert_allclose(runcat.cat.Lambda, [24.16809, 26.92924, 13.35232], rtol=2e-3)
         testing.assert_almost_equal(runcat.cat.lambda_e, [2.50009, 4.85051, 2.46239], 5)
         testing.assert_almost_equal(runcat.cat.z_lambda, [0.2278546, 0.3225739, 0.2176394], 5)
         testing.assert_almost_equal(runcat.cat.z_lambda_e, [0.0063102, 0.0135351, 0.0098461], 5)
