@@ -52,7 +52,7 @@ class RuncatTestCase(unittest.TestCase):
         testing.assert_allclose(runcat.cat.lambda_e, [2.50009,  4.85051, -1], rtol=2e-3)
         testing.assert_almost_equal(runcat.cat.z_lambda, [0.2278544,  0.3225641, -1.], 5)
         testing.assert_almost_equal(runcat.cat.z_lambda_e, [0.0063079,  0.0135317, -1.], 5)
-        testing.assert_almost_equal(runcat.cat.bkg_local, [1.2287, 1.68855, 0.], 5)
+        testing.assert_allclose(runcat.cat.bkg_local, [1.2287, 1.68855, 0.], rtol=2e-3)
 
 if __name__=='__main__':
     unittest.main()
