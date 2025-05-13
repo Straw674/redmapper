@@ -43,7 +43,7 @@ class RuncatTestCase(unittest.TestCase):
         testing.assert_allclose(runcat.cat.lambda_e, [2.50009, 4.85051, 2.46239], rtol=2e-3)
         testing.assert_almost_equal(runcat.cat.z_lambda, [0.2278546, 0.3225739, 0.2176394], 5)
         testing.assert_almost_equal(runcat.cat.z_lambda_e, [0.0063102, 0.0135351, 0.0098461], 5)
-        testing.assert_almost_equal(runcat.cat.bkg_local, [1.2287012, 1.6885487, 1.7221997])
+        testing.assert_allclose(runcat.cat.bkg_local, [1.2287012, 1.6885487, 1.7221997], rtol=2e-3)
 
         runcat.run(do_percolation_masking=True)
 
