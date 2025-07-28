@@ -820,20 +820,20 @@ class GalaxyCatalogMaker(object):
 
         hpix, = np.where(self.ngals > 0)
 
-        filename_dtype = 'S%d' % (len(self.outbase_nopath) + 15)
+        filename_dtype = 'U%d' % (len(self.outbase_nopath) + 15)
 
         dtype = [('nside', 'i2'),
                  ('hpix', 'i4', (hpix.size, )),
                  ('ra_pix', 'f8', (hpix.size, )),
                  ('dec_pix', 'f8', (hpix.size, )),
                  ('ngals', 'i4', (hpix.size, )),
-                 ('filenames', filename_dtype, (hpix.size, )),
+                 ('filenames', filename_dtype, (int(np.clip(hpix.size, 2, None)), )),
                  ('lim_ref', 'f4'),
                  ('ref_ind', 'i2'),
                  ('area', 'f8'),
                  ('nmag', 'i4'),
                  ('mode', 'S10'),
-                 ('b', 'f8', (np.clip(self.nmag, 2, None), )),
+                 ('b', 'f8', (int(np.clip(self.nmag, 2, None)), )),
                  ('zeropoint', 'f4'),
                  ('has_truth', 'i2'),
                  ('has_zspec', 'i2')]
@@ -910,6 +910,9 @@ class GalaxyCatalogMaker(object):
 
             ctr = 0
             for i, f in enumerate(tab.filenames):
+                if f == "":
+                    # This is an empty holder.
+                    continue
                 try:
                     fname = os.path.join(self.outpath, f.decode())
                 except AttributeError:
