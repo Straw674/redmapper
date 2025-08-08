@@ -7,4 +7,3 @@ numpy>=1.26
 scipy
 healsparse
 hpgeom
-lsst-resources

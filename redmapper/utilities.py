@@ -6,7 +6,7 @@
 import numpy as np
 from scipy import special
 from scipy.linalg import solve_banded
-from lsst.resources.packageresource import PackageResourcePath
+from importlib import resources
 import scipy.interpolate as interpolate
 import fitsio
 from scipy.special import erf
@@ -197,11 +197,9 @@ class MStar(object):
         self.survey = survey.strip()
         self.band = band.strip()
 
-        resource = PackageResourcePath(
-            "resource://redmapper/data/mstar/mstar_%s_%s.fit" % (self.survey, self.band),
-        )
-        with resource.as_local() as loc:
-            self.mstar_file = loc.ospath
+        ref = resources.files("redmapper").joinpath("data/mstar/mstar_%s_%s.fit" % (self.survey, self.band))
+        with resources.as_file(ref) as f:
+            self.mstar_file = f.as_posix()
 
         self._mstar_arr = fitsio.read(self.mstar_file, ext=1, upper=True)
 
@@ -248,12 +246,9 @@ class RedGalInitialColors(object):
 
         self._template_file = None
 
-        module = __name__.split('.')[0]
-        resource = PackageResourcePath(
-            "resource://redmapper/data/initcolors/%s" % (redgal_template),
-        )
-        with resource.as_local() as loc:
-            self._template_file = loc.ospath
+        ref = resources.files("redmapper").joinpath("data/initcolors/%s" % (redgal_template))
+        with resources.as_file(ref) as f:
+            self._template_file = f.as_posix()
 
         if not os.path.isfile(self._template_file):
             self._template_file = os.path.abspath(redgal_template)
