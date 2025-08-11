@@ -9,13 +9,13 @@ RUN apt-get install -y curl tini
 
 RUN apt-get clean
 
-RUN /usr/sbin/groupadd -g 1000 user && \
-    /usr/sbin/useradd -u 1000 -g 1000 -d /opt/redmapper redmapper && \
-    mkdir /opt/redmapper && chown redmapper.user /opt/redmapper && \
-    chown -R redmapper.user /opt
+RUN /usr/sbin/groupadd -f -g 1000 user && \
+    /usr/sbin/useradd -g 1000 -d /opt/redmapper redmapper && \
+    mkdir /opt/redmapper && chown redmapper:user /opt/redmapper && \
+    chown -R redmapper:user /opt
 
 COPY . /opt/redmapper/workdir
-RUN chown -R redmapper.user /opt/redmapper/workdir
+RUN chown -R redmapper:user /opt/redmapper/workdir
 
 USER redmapper
 RUN curl -L -o ~/miniforge.sh https://github.com/conda-forge/miniforge/releases/download/25.3.0-3/Miniforge3-25.3.0-3-Linux-x86_64.sh && \
@@ -26,12 +26,12 @@ RUN echo ". /opt/conda/etc/profile.d/conda.sh" > /opt/redmapper/startup.sh && \
     echo "conda activate redmapper-env" >> /opt/redmapper/startup.sh
 
 RUN . /opt/conda/etc/profile.d/conda.sh && conda activate redmapper-env && \
-    conda install --yes python=3.12 numpy scipy astropy matplotlib pyyaml gsl c-compiler fitsio esutil healpy healsparse hpgeom lsst-resources && \
+    conda install --yes python=3.12 numpy scipy astropy matplotlib pyyaml gsl c-compiler fitsio esutil healpy healsparse hpgeom && \
     conda clean -af --yes
 
 RUN . /opt/conda/etc/profile.d/conda.sh && conda activate redmapper-env && \
-    cd /opt/redmapper/workdir && \
-    pip install . --no-deps --no-build-isolation
+    cd /opt/redmapper/workdir && SETUPTOOLS_SCM_PRETEND_VERSION=$REDMAPPER_TAG \
+    pip install . --no-deps
 
 ENTRYPOINT [ "/usr/bin/tini", "--" ]
 CMD [ "/bin/bash", "-lc" ]
