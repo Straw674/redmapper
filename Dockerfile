@@ -2,6 +2,7 @@ FROM ubuntu:24.04
 
 ENV LANG=C.UTF-8 LC_ALL=C.UTF-8
 ENV PATH /opt/conda/bin:$PATH
+ARG REDMAPPER_TAG
 
 RUN apt-get update && \
     apt-get -y upgrade
@@ -30,8 +31,8 @@ RUN . /opt/conda/etc/profile.d/conda.sh && conda activate redmapper-env && \
     conda clean -af --yes
 
 RUN . /opt/conda/etc/profile.d/conda.sh && conda activate redmapper-env && \
-    cd /opt/redmapper/workdir && SETUPTOOLS_SCM_PRETEND_VERSION=$REDMAPPER_TAG && \
-    pip install . --no-deps
+    cd /opt/redmapper/workdir && \
+    SETUPTOOLS_SCM_PRETEND_VERSION_FOR_REDMAPPER=${REDMAPPER_TAG} pip install . --no-deps
 
 ENTRYPOINT [ "/usr/bin/tini", "--" ]
 CMD [ "/bin/bash", "-lc" ]
