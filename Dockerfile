@@ -30,7 +30,7 @@ RUN . /opt/conda/etc/profile.d/conda.sh && conda activate redmapper-env && \
     conda clean -af --yes
 
 RUN . /opt/conda/etc/profile.d/conda.sh && conda activate redmapper-env && \
-    cd /opt/redmapper/workdir && SETUPTOOLS_SCM_PRETEND_VERSION=$REDMAPPER_TAG \
+    cd /opt/redmapper/workdir && SETUPTOOLS_SCM_PRETEND_VERSION=$REDMAPPER_TAG && \
     pip install . --no-deps
 
 ENTRYPOINT [ "/usr/bin/tini", "--" ]
