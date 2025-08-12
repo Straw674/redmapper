@@ -33,7 +33,7 @@ int nfw_weights(double inlambda, double r0, double beta, long ngal,
       }
 
     // check for infinity/NaN
-    if (!finite(p[i])) p[i]=0.0;
+    if (!isfinite(p[i])) p[i]=0.0;
     
     // and check radius and do weights
     if (rsig <= 0.0) {

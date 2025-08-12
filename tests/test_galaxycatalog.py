@@ -313,6 +313,35 @@ class GalaxyCatalogTestCase(unittest.TestCase):
         self.assertEqual(tab2.has_truth, 0)
         self.assertEqual(tab2.has_zspec, 1)
 
+    def test_galaxycatalog_create_onepix(self):
+        self.test_dir = tempfile.mkdtemp(dir='./', prefix='TestRedmapper-')
+
+        info_dict = {'LIM_REF': 21.0,
+                     'REF_IND': 3,
+                     'AREA': 25.0,
+                     'NMAG': 5,
+                     'MODE': 'SDSS',
+                     'ZP': 22.5,
+                     'U_IND': 0,
+                     'G_IND': 1,
+                     'R_IND': 2,
+                     'I_IND': 3,
+                     'Z_IND': 3}
+
+        configfile = os.path.join('data_for_tests', 'testconfig.yaml')
+        config = Configuration(configfile)
+        gals = GalaxyCatalog.from_galfile(config.galfile)
+        tab = Entry.from_fits_file(config.galfile)
+
+        # Cut down to one healpix.
+        indices = hpg.angle_to_pixel(tab.nside, gals.ra, gals.dec, nest=False)
+        use, = np.where(indices == indices[0])
+        gals = gals[use]
+
+        maker = GalaxyCatalogMaker(os.path.join(self.test_dir, 'test_working'), info_dict, nside=tab.nside)
+        maker.append_galaxies(gals._ndarray)
+        maker.finalize_catalog()
+
     def setUp(self):
         self.test_dir = None
 

@@ -21,7 +21,7 @@ class ClusterFitTestCase(unittest.TestCase):
         """
         Run the ClusterFit test.
         """
-        random.seed(seed=12345)
+        rng = np.random.RandomState(12345)
 
         file_path = 'data_for_tests'
         conf_filename = 'testconfig.yaml'
@@ -46,7 +46,7 @@ class ClusterFitTestCase(unittest.TestCase):
         cluster.redshift = 0.227865
         cluster.update_neighbors_dist()
 
-        mask = HPMask(cluster.config)
+        mask = HPMask(cluster.config, rng=rng)
         maskgal_index = mask.select_maskgals_sample(maskgal_index=0)
         depthstr = DepthMap(cluster.config)
         mask.set_radmask(cluster)

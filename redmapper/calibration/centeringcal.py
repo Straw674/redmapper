@@ -252,7 +252,7 @@ class WcenCalibrator(object):
     Class to calibrate the parameters of the wcen centering model.
     """
 
-    def __init__(self, config, iteration, randcatfile=None, randsatcatfile=None):
+    def __init__(self, config, iteration, randcatfile=None, randsatcatfile=None, rng=None):
         """
         Instantiate a WcenCalibrator
 
@@ -269,8 +269,14 @@ class WcenCalibrator(object):
         randsatcatfile: `str`, optional
            Catalog file with richness information on randomly selected
            satellites.  Default is None, but must be set if iteration==1.
+        rng : `np.random.RandomState`, optional
+            Random number generator.
         """
         self.config = config
+
+        if rng is None:
+            rng = np.random.RandomState(self.config.randomseed)
+        self.rng = rng
 
         if iteration == 1:
             if randcatfile is None:
@@ -480,7 +486,7 @@ class WcenCalibrator(object):
         def schechter(x, alpha=-1.0, mstar=0.0):
             return 10.**(0.4*(alpha + 1.0)*(mstar - x)) * np.exp(-10.**(0.4*(mstar - x)))
 
-        mag = sample_from_pdf(schechter, mrange, step, nmag, alpha=self.config.calib_lumfunc_alpha, mstar=mstar)
+        mag = sample_from_pdf(schechter, mrange, step, nmag, self.rng, alpha=self.config.calib_lumfunc_alpha, mstar=mstar)
 
         # We want to sample lambda galaxies from a schechter function...
         # And figure out the 3 brightest galaxies (m1, m2, m3)
@@ -492,7 +498,7 @@ class WcenCalibrator(object):
         m3 = np.zeros_like(m1)
 
         for i in range(ntrial):
-            r = np.random.rand(nmag)
+            r = self.rng.rand(nmag)
             st = np.argsort(r)
 
             for j in range(nlambdas):

@@ -171,7 +171,7 @@ class RunColormem(ClusterRunner):
         self.members = Catalog(self.members._ndarray[b])
 
         if self.config.calib_colormem_smooth > 0.0:
-            self.members.z += np.random.normal(scale=self.config.calib_colormem_smooth, size=self.members.size)
+            self.members.z += self.rng.normal(scale=self.config.calib_colormem_smooth, size=self.members.size)
 
     def output_training(self):
         """

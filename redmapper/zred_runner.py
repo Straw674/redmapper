@@ -28,7 +28,7 @@ class ZredRunCatalog(object):
     Class to run a galaxy catalog file to compute zreds, using multiprocessing.
     """
 
-    def __init__(self, config):
+    def __init__(self, config, rng=None):
         """
         Instantiate a ZredRunCatalog object.
 
@@ -36,10 +36,16 @@ class ZredRunCatalog(object):
         ----------
         config: `redmapper.Configuration`
            Configuration object
+        rng : `np.random.RandomState`, optional
+            Random number generator.
         """
 
         self.config = config.copy()
         self.config.cosmo = None
+
+        if rng is None:
+            rng = np.random.RandomState(self.config.randomseed)
+        self.rng = rng
 
     def run(self, galaxyfile, outfile, clobber=False, nperproc=None, maxperproc=500000):
         """
@@ -69,7 +75,7 @@ class ZredRunCatalog(object):
         ngal = hdr['NAXIS2']
 
         zredstr = RedSequenceColorPar(self.config.parfile)
-        self.zredc = ZredColor(zredstr)
+        self.zredc = ZredColor(zredstr, rng=self.rng)
 
         zreds = Catalog(np.zeros(ngal, dtype=zred_extra_dtype(self.config.zred_nsamp)))
 

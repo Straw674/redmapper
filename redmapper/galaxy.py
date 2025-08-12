@@ -88,7 +88,7 @@ class GalaxyCatalog(Catalog):
 
     @classmethod
     def from_galfile(cls, filename, zredfile=None, nside=0, hpix=[], border=0.0, truth=False,
-                     use_tempfile=False, refmag_range=[-1000.0, 1000.0], chisq_max=1e100, zspec=False):
+                     use_tempfile=False, refmag_range=[-1000.0, 1000.0], chisq_max=1e30, zspec=False):
         """
         Generate a GalaxyCatalog from a redmapper "galfile."
 
@@ -135,10 +135,11 @@ class GalaxyCatalog(Catalog):
             raise ValueError("Border must be >= 0.0.")
         # ensure that nside is valid, and hpix is within range (if necessary)
         if nside > 0:
+            npix = hpg.nside_to_npixel(int(nside))
             if len(_hpix) > 0:
                 for _hp in _hpix:
-                    if _hp < 0 or _hp >= hpg.nside_to_npixel(nside):
-                        raise ValueError("hpix %d is out of range." % (hp))
+                    if (_hp < 0) or (_hp >= npix):
+                        raise ValueError("hpix %d is out of range." % (_hp))
 
         if border > 0.0 and len(_hpix) > 0:
             if len(_hpix) != 1:
@@ -684,7 +685,7 @@ class GalaxyCatalogMaker(object):
             raise RuntimeError("Cannot split galaxies when final file %s already exists." % (self.filename))
 
         # create a table
-        self.ngals = np.zeros(hpg.nside_to_npixel(self.nside), dtype=np.int32)
+        self.ngals = np.zeros(hpg.nside_to_npixel(int(self.nside)), dtype=np.int32)
 
         # And read in mask if necessary
         self.mask = None
@@ -736,7 +737,7 @@ class GalaxyCatalogMaker(object):
 
         ipring = hpg.angle_to_pixel(self.nside, gals['ra'], gals['dec'], nest=False)
 
-        h, rev = esutil.stat.histogram(ipring, min=0, max=self.ngals.size-1, rev=True)
+        h, rev = esutil.stat.histogram(ipring, min=0, max=self.ngals.size - 1, rev=True)
 
         gdpix, = np.where(h > 0)
         for pix in gdpix:
@@ -819,20 +820,20 @@ class GalaxyCatalogMaker(object):
 
         hpix, = np.where(self.ngals > 0)
 
-        filename_dtype = 'a%d' % (len(self.outbase_nopath) + 15)
+        filename_dtype = 'U%d' % (len(self.outbase_nopath) + 15)
 
         dtype = [('nside', 'i2'),
                  ('hpix', 'i4', (hpix.size, )),
                  ('ra_pix', 'f8', (hpix.size, )),
                  ('dec_pix', 'f8', (hpix.size, )),
                  ('ngals', 'i4', (hpix.size, )),
-                 ('filenames', filename_dtype, (hpix.size, )),
+                 ('filenames', filename_dtype, (int(np.clip(hpix.size, 2, None)), )),
                  ('lim_ref', 'f4'),
                  ('ref_ind', 'i2'),
                  ('area', 'f8'),
                  ('nmag', 'i4'),
-                 ('mode', 'a10'),
-                 ('b', 'f8', (np.clip(self.nmag, 2, None), )),
+                 ('mode', 'S10'),
+                 ('b', 'f8', (int(np.clip(self.nmag, 2, None)), )),
                  ('zeropoint', 'f4'),
                  ('has_truth', 'i2'),
                  ('has_zspec', 'i2')]
@@ -909,6 +910,9 @@ class GalaxyCatalogMaker(object):
 
             ctr = 0
             for i, f in enumerate(tab.filenames):
+                if f == "":
+                    # This is an empty holder.
+                    continue
                 try:
                     fname = os.path.join(self.outpath, f.decode())
                 except AttributeError:

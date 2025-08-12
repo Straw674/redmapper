@@ -29,12 +29,16 @@ class RedmagicSelector(object):
            Configuration object or config filename
         vlim_masks: `OrderedDict`, optional
            Dictionary of vlim_masks.  Will read in if not set.
+        rng : `np.random.RandomState`, optional
+            Random number generator.
         """
 
         if not isinstance(conf, Configuration):
             self.config = Configuration(conf)
         else:
             self.config = conf
+
+        self.rng = np.random.RandomState(self.config.randomseed)
 
         redmagicfilepath = os.path.dirname(self.config.redmagicfile)
 
@@ -147,9 +151,9 @@ class RedmagicSelector(object):
         except (ValueError, AttributeError) as e:
             # Sample from zred + zred_e (not optimal, for old catalogs)
             zredmagic_samp = np.zeros((zredmagic.size, 1))
-            zredmagic_samp[:, 0] = np.random.normal(loc=zredmagic,
-                                                    scale=zredmagic_e,
-                                                    size=zredmagic.size)
+            zredmagic_samp[:, 0] = self.rng.normal(loc=zredmagic,
+                                                   scale=zredmagic_e,
+                                                   size=zredmagic.size)
 
         spl = CubicSpline(calstr.nodes, calstr.cmax, fixextrap=True)
         chi2max = np.clip(spl(gals.zred_uncorr), 0.1, calstr.maxchi)

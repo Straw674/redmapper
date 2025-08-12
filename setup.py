@@ -33,6 +33,11 @@ solver_nfw_ext = Extension(
     ],
 )
 
+if os.environ.get("GSLI", None):
+    if os.environ.get("CONDA_PREFIX", None):
+        os.environ["GSLI"] = os.path.expandvars("${CONDA_PREFIX}/include")
+        os.environ["GSLL"] = os.path.expandvars("${CONDA_PREFIX}/lib")
+
 chisq_dist_ext = Extension(
     "redmapper.chisq_dist._chisq_dist_pywrap",
     extra_compile_args=["-std=gnu99", os.path.expandvars("-I${GSLI}")],

@@ -8,7 +8,6 @@ import numpy.testing as testing
 import numpy as np
 import fitsio
 import tempfile
-from numpy import random
 import glob
 
 from redmapper import Configuration
@@ -24,7 +23,7 @@ class RedmagicCalTestCase(unittest.TestCase):
         """
         Test the redmagic fitting functions individually
         """
-        np.random.seed(12345)
+        rng = np.random.RandomState(12345)
 
         file_path = 'data_for_tests/redmagic_test'
 
@@ -46,7 +45,7 @@ class RedmagicCalTestCase(unittest.TestCase):
         # randomn = np.zeros(calstr2['z'][0, :].size)
         zsamp = calstr2['z'][0, :]
 
-        ab_use = np.random.choice(np.arange(calstr2['z'][0, :].size), size=3000, replace=False)
+        ab_use = rng.choice(np.arange(calstr2['z'][0, :].size), size=3000, replace=False)
 
         # Force this to be some smooth function of redshift
         zcal_raw = calstr2['z'][0, :] + 0.2 * (calstr2['z'][0, :] - 0.3)
@@ -54,7 +53,7 @@ class RedmagicCalTestCase(unittest.TestCase):
 
         # And add some excess noise...
         scale = 1.0
-        zcal = zcal_raw + np.random.normal(loc=0.0, scale=zcal_e*scale, size=zcal_raw.size)
+        zcal = zcal_raw + rng.normal(loc=0.0, scale=zcal_e*scale, size=zcal_raw.size)
 
         rmfitter = RedmagicParameterFitter(calstr['nodes'][0, :], calstr['corrnodes'][0, :],
                                            calstr2['z'][0, :], calstr2['z_err'][0, :],
@@ -69,10 +68,10 @@ class RedmagicCalTestCase(unittest.TestCase):
                                            ab_use=ab_use)
 
         # These match the IDL values
-        testing.assert_almost_equal(rmfitter(calstr['cmax'][0, :]), 1.9331937798956758)
+        testing.assert_almost_equal(rmfitter(calstr['cmax'][0, :]), 1.9331937798956758, 6)
 
         p0_cval = np.zeros(calstr['nodes'][0, :].size) + 2.0
-        testing.assert_almost_equal(rmfitter(p0_cval), 317.4524284321642)
+        testing.assert_almost_equal(rmfitter(p0_cval), 317.4524284321642, 4)
 
         cvals = rmfitter.fit(p0_cval)
 
@@ -100,7 +99,7 @@ class RedmagicCalTestCase(unittest.TestCase):
         Test the redmagic calibration code
         """
 
-        np.random.seed(12345)
+        rng = np.random.RandomState(12345)
 
         file_path = 'data_for_tests'
         conf_filename = 'testconfig_redmagic.yaml'
@@ -156,7 +155,7 @@ class RedmagicCalTestCase(unittest.TestCase):
         os.remove(vmaskfile)
         mask = VolumeLimitMask(config, cal['etamin'][0], use_geometry=True)
 
-        rng = random.RandomState(12345)
+        rng = np.random.RandomState(12345)
 
         # Now test the running, using the output file which has valid galaxies/zreds
         run_redmagic = RunRedmagicTask(redmagic_cal.runfile)

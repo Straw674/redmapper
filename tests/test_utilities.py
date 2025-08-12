@@ -32,14 +32,14 @@ class SplineTestCase(unittest.TestCase):
         def power(x, exp=1.0):
             return x ** exp
 
-        np.random.seed(seed=1000)
-        vals = sample_from_pdf(power, [0.0, 10.0], 0.001, 10000, exp=1.0)
+        rng = np.random.RandomState(1000)
+        vals = sample_from_pdf(power, [0.0, 10.0], 0.001, 10000, rng, exp=1.0)
         h = esutil.stat.histogram(vals, min=0.0, max=10.0-0.003, more=True, binsize=0.1)
         fit = np.polyfit(np.log10(h['center']), np.log10(h['hist']), 1)
         # first component should be ~1 for a log-log plot
         testing.assert_almost_equal(fit[0], 0.9836134)
 
-        vals = sample_from_pdf(power, [0.0, 10.0], 0.001, 10000, exp=2.0)
+        vals = sample_from_pdf(power, [0.0, 10.0], 0.001, 10000, rng, exp=2.0)
         h = esutil.stat.histogram(vals, min=0.0, max=10.0-0.003, more=True, binsize=0.1)
         ok, = np.where(h['hist'] > 10.0)
         fit = np.polyfit(np.log10(h['center'][ok]), np.log10(h['hist'][ok]), 1)

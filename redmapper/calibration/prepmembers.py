@@ -14,7 +14,7 @@ class PrepMembers(object):
     Class to prepare members for input to the next calibration iteration.
     """
 
-    def __init__(self, conf):
+    def __init__(self, conf, rng=None):
         """
         Instantiate a PrepMembers object.
 
@@ -22,11 +22,17 @@ class PrepMembers(object):
         ----------
         conf: `str` or `redmapper.Configuration`
            Config filename or configuration object
+        rng : `np.random.RandomState`, optional
+            Random number generator.
         """
         if not isinstance(conf, Configuration):
             self.config = Configuration(conf)
         else:
             self.config = conf
+
+        if rng is None:
+            rng = np.random.RandomState(self.config.randomseed)
+        self.rng = rng
 
     def run(self, mode):
         """
@@ -102,7 +108,7 @@ class PrepMembers(object):
         newmem.z_lambda = cat.z_lambda[a]
 
         if self.config.calib_smooth > 0.0:
-            newmem.z[:] += self.config.calib_smooth * np.random.normal(size=newmem.size)
+            newmem.z[:] += self.config.calib_smooth * self.rng.normal(size=newmem.size)
 
         newmem.to_fits_file(self.config.zmemfile)
 

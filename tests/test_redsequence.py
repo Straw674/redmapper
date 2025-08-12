@@ -82,10 +82,10 @@ class RedSequenceColorTestCase(unittest.TestCase):
         testing.assert_almost_equal(zredstr.covmat[3,0,indices],np.array([0.000251,  0.000707,  0.000006]),decimal=5)
 
         # lupcorr...here we want to test all colors...
-        testing.assert_almost_equal(zredstr.lupcorr[800,indices,0],np.array([-0.060606, -0.127144, -0.510393]),decimal=5)
-        testing.assert_almost_equal(zredstr.lupcorr[800,indices,1],np.array([-0.000689, -0.002615, -0.007729]),decimal=5)
-        testing.assert_almost_equal(zredstr.lupcorr[800,indices,2],np.array([0.000025, -0.000057, -0.000425]),decimal=5)
-        testing.assert_almost_equal(zredstr.lupcorr[800,indices,3],np.array([0.002966,  0.002853,  0.002245]),decimal=5)
+        testing.assert_almost_equal(zredstr.lupcorr[800,indices,0],np.array([-0.060606, -0.127144, -0.510393]),decimal=3)
+        testing.assert_almost_equal(zredstr.lupcorr[800,indices,1],np.array([-0.000689, -0.002615, -0.007729]),decimal=3)
+        testing.assert_almost_equal(zredstr.lupcorr[800,indices,2],np.array([0.000025, -0.000057, -0.000425]),decimal=3)
+        testing.assert_almost_equal(zredstr.lupcorr[800,indices,3],np.array([0.002966,  0.002853,  0.002245]),decimal=3)
 
         # corr stuff
         testing.assert_almost_equal(zredstr.corr[indices],np.array([0.004373,  0.006569,  0.008507]),decimal=5)

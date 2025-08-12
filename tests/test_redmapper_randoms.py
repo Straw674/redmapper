@@ -23,8 +23,6 @@ class RedmapperRandomsTestCase(unittest.TestCase):
         Run test of redmapper.GenerateRandoms and redmapper.RunRandomsZmask
         """
 
-        random.seed(seed=12345)
-
         file_path = 'data_for_tests'
         configfile = 'testconfig.yaml'
 
@@ -45,8 +43,8 @@ class RedmapperRandomsTestCase(unittest.TestCase):
         nrands = 100
         rng = random.RandomState(12345)
 
-        generateRandoms = GenerateRandoms(config, vlim_mask=vlim)
-        generateRandoms.generate_randoms(nrands, rng=rng)
+        generateRandoms = GenerateRandoms(config, vlim_mask=vlim, rng=rng)
+        generateRandoms.generate_randoms(nrands)
 
         # Read in the randoms, make sure they come back
         rands = RandomCatalog.from_randfile(config.randfile)

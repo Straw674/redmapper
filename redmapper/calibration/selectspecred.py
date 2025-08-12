@@ -235,7 +235,7 @@ class SelectSpecRedGalaxies(object):
         for m in range(nmodes):
             j = self.config.calib_colormem_colormodes[m]
 
-            fig = plt.figure(1, figsize=(8, 6))
+            fig = plt.figure(figsize=(8, 6))
             fig.clf()
             ax = fig.add_subplot(111)
 

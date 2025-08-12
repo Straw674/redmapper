@@ -229,7 +229,7 @@ class RedmapperRun(object):
         """
 
         # generate all the pixels
-        pixels = np.arange(hpg.nside_to_npixel(nside_test))
+        pixels = np.arange(hpg.nside_to_npixel(int(nside_test)))
 
         # Which of these match the parent?
         if len(self.config.d.hpix) > 0:

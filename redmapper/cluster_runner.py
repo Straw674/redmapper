@@ -63,6 +63,8 @@ class ClusterRunner(object):
         else:
             self.config = conf
 
+        self.rng = np.random.RandomState(seed=self.config.randomseed)
+
         # Generic defaults
         self.read_gals = True
         self.read_zreds = False
@@ -209,7 +211,7 @@ class ClusterRunner(object):
                 if self.cutgals_chisqmax:
                     chisq_max = self.config.chisq_max
                 else:
-                    chisq_max = 1e100
+                    chisq_max = 1e30
                 self.gals = GalaxyCatalog.from_galfile(self.config.galfile,
                                                        nside=self.config.d.nside,
                                                        hpix=self.config.d.hpix,

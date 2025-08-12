@@ -282,7 +282,7 @@ class RunPercolation(ClusterRunner):
             cluster.redshift = z_lambda
 
         # Grab the correct centering class here
-        cent = reduce(getattr, self.config.centerclass.split('.'), sys.modules[__name__])(cluster)
+        cent = reduce(getattr, self.config.centerclass.split('.'), sys.modules[__name__])(cluster, rng=self.rng)
         if not cent.find_center() or cent.ngood==0:
             bad = True
             self._reset_bad_values(cluster)

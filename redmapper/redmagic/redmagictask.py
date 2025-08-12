@@ -61,7 +61,7 @@ l           Output path.  Default is None, use same absolute
         self.config.start_file_logging()
 
         if rng is None:
-            rng = np.random.RandomState()
+            rng = np.random.RandomState(self.config.randomseed)
 
         if not self.config.galfile_pixelized:
             raise ValueError("Code only runs with pixelized galfile.")
@@ -159,7 +159,7 @@ l           Output path.  Default is None, use same absolute
 
             gals = GalaxyCatalog.from_fits_file(filenames[j])
 
-            rand_generator = RedmagicGenerateRandoms(self.config, selector.vlim_masks[mode], gals)
+            rand_generator = RedmagicGenerateRandoms(self.config, selector.vlim_masks[mode], gals, rng=rng)
             if n_randoms is None:
                 _n_randoms = gals.size * 10
             else:
@@ -167,6 +167,6 @@ l           Output path.  Default is None, use same absolute
 
             randfile = self.config.redmapper_filename('redmagic_%s_randoms' % (mode), withversion=True)
 
-            rand_generator.generate_randoms(_n_randoms, randfile, clobber=clobber, rng=rng)
+            rand_generator.generate_randoms(_n_randoms, randfile, clobber=clobber)
 
         self.config.stop_file_logging()

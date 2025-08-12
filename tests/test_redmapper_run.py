@@ -26,9 +26,6 @@ class RedmapperRunTestCase(unittest.TestCase):
         """
         Run test of redmapper.RedmapperRun.
         """
-
-        random.seed(seed=12345)
-
         file_path = 'data_for_tests'
         configfile = 'testconfig.yaml'
 
@@ -39,6 +36,7 @@ class RedmapperRunTestCase(unittest.TestCase):
 
         # First, test the splitting
         config.calib_run_nproc = 4
+        config.randomseed = 12345
 
         redmapper_run = RedmapperRun(config)
 
@@ -67,7 +65,7 @@ class RedmapperRunTestCase(unittest.TestCase):
         # Spot checks to look for regressions
         testing.assert_equal(cat.size, 23)
         self.assertGreater(cat.Lambda.min(), 3.0)
-        testing.assert_array_almost_equal(cat.Lambda[0: 3], np.array([24.351152, 17.944063, 7.7384853]))
+        testing.assert_array_almost_equal(cat.Lambda[0: 3], np.array([24.274878, 17.944063,  7.738485]))
 
         # And check that the members are all accounted for...
         mem = Catalog.from_fits_file(os.path.join(config.outpath, '%s_final_members.fit' % (config.d.outbase)))

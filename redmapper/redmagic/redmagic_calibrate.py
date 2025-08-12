@@ -481,7 +481,7 @@ class RedmagicCalibrator(object):
                                               ('cost_zrange', 'f4', 2),
                                               ('lstar_cushion', 'f4'),
                                               ('z_cushion', 'f4'),
-                                              ('name', 'a%d' % (len(self.config.redmagic_names[i]) + 1)),
+                                              ('name', 'S%d' % (len(self.config.redmagic_names[i]) + 1)),
                                               ('maxchi', 'f4'),
                                               ('nodes', 'f8', nodes.size),
                                               ('etamin', 'f8'),
@@ -493,7 +493,7 @@ class RedmagicCalibrator(object):
                                               ('buffer', 'f4'),
                                               ('bias', 'f8', corrnodes.size),
                                               ('eratio', 'f8', corrnodes.size),
-                                              ('vmaskfile', 'a%d' % (len(vmaskfile) + 1))]))
+                                              ('vmaskfile', 'S%d' % (len(vmaskfile) + 1))]))
 
             calstr.zrange[:] = redmagic_zrange
             calstr.cost_zrange[:] = cost_zrange
