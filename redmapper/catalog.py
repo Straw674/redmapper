@@ -218,7 +218,8 @@ class DataObject(object):
         # also need to know original __dir__!
         return sorted(set(
                 dir(type(self)) +
-                self.__dict__.keys() +
+                # add list for compatibility with Python 3
+                list(self.__dict__.keys()) +
                 [x.lower() for x in self._ndarray.dtype.names]))
 
 

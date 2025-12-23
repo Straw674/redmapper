@@ -407,6 +407,8 @@ class Configuration(object):
     redmagic_constchis = ConfigField(default=[], required=True, isArray=True)
     redmagic_use_constchi = ConfigField(default=False, required=True)
 
+    more_qa_plots = ConfigField(default=False, required=False)
+
     def __init__(self, configfile, outpath=None):
         """
         Instantiate a Configuration object

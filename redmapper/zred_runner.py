@@ -248,6 +248,149 @@ class ZredRunPixels(object):
 
         self.make_zred_table(retvals)
 
+
+
+        # Generate QA plots if requested
+        if hasattr(self.config, "more_qa_plots") and self.config.more_qa_plots:
+            self._make_qa_plots(retvals)
+
+    def _make_qa_plots(self, indices_and_filenames):
+        """
+        Generate QA plots for zred computation results.
+
+        Parameters
+        ----------
+        indices_and_filenames: `list`
+           List of (index, outfile) tuples describing zred files.
+        """
+
+        import matplotlib.pyplot as plt
+
+        # Create plotpath if it doesn't exist
+        if not hasattr(self.config, "plotpath") or self.config.plotpath is None:
+            self.config.logger.warning("plotpath not set in config, skipping QA plots")
+            return
+
+        if not os.path.exists(self.config.plotpath):
+            os.makedirs(self.config.plotpath)
+
+        self.config.logger.info("Generating zred QA plots...")
+
+        # Read all zred data
+        all_zred = []
+        all_zred_e = []
+        all_chisq = []
+        all_lkhd = []
+
+        for index, filename in indices_and_filenames:
+            if os.path.isfile(filename):
+                data = fitsio.read(filename, ext=1, upper=True)
+                all_zred.append(data["ZRED"])
+                all_zred_e.append(data["ZRED_E"])
+                all_chisq.append(data["CHISQ"])
+                all_lkhd.append(data["LKHD"])
+
+        if len(all_zred) == 0:
+            self.config.logger.warning("No zred data found, skipping QA plots")
+            return
+
+        all_zred = np.concatenate(all_zred)
+        all_zred_e = np.concatenate(all_zred_e)
+        all_chisq = np.concatenate(all_chisq)
+        all_lkhd = np.concatenate(all_lkhd)
+
+        # Filter out bad values
+        good = (
+            (all_zred > 0)
+            & (all_zred_e > 0)
+            & np.isfinite(all_zred)
+            & np.isfinite(all_zred_e)
+        )
+
+        # Plot 1: zred distribution
+        fig, ax = plt.subplots(figsize=(8, 6))
+        ax.hist(all_zred[good], bins=50, alpha=0.7, edgecolor="black")
+        ax.set_xlabel("zred", fontsize=12)
+        ax.set_ylabel("Number of Galaxies", fontsize=12)
+        ax.set_title("Photometric Redshift Distribution", fontsize=14)
+        ax.grid(alpha=0.3)
+        plt.tight_layout()
+        plt.savefig(
+            os.path.join(self.config.plotpath, f"{self.outbase}_zred_hist.png"), dpi=300
+        )
+        plt.close()
+
+        # Plot 2: zred vs zred_e
+        fig, ax = plt.subplots(figsize=(8, 6))
+        ax.hexbin(
+            all_zred[good],
+            all_zred_e[good],
+            gridsize=50,
+            cmap="Reds",
+            mincnt=1,
+            bins="log",
+        )
+        ax.set_xlabel("zred", fontsize=12)
+        ax.set_ylabel("zred_e", fontsize=12)
+        ax.set_title("Photometric Redshift vs Error", fontsize=14)
+        ax.grid(alpha=0.3)
+        cbar = plt.colorbar(ax.collections[0], ax=ax)
+        cbar.set_label("Number of Galaxies", fontsize=10)
+        plt.tight_layout()
+        plt.savefig(
+            os.path.join(self.config.plotpath, f"{self.outbase}_zred_vs_err.png"),
+            dpi=300,
+        )
+        plt.close()
+
+        # Plot 3: chi-squared distribution
+        fig, ax = plt.subplots(figsize=(8, 6))
+        chisq_good = all_chisq[good & (all_chisq > 0)]
+        if len(chisq_good) > 0:
+            ax.hist(np.log10(chisq_good), bins=50, alpha=0.7, edgecolor="black")
+            ax.set_xlabel("log10(χ²)", fontsize=12)
+            ax.set_ylabel("Number of Galaxies", fontsize=12)
+            ax.set_title("Chi-squared Distribution", fontsize=14)
+            ax.grid(alpha=0.3)
+        plt.tight_layout()
+        plt.savefig(
+            os.path.join(self.config.plotpath, f"{self.outbase}_chisq_hist.png"),
+            dpi=300,
+        )
+        plt.close()
+
+        # Plot 4: likelihood distribution
+        fig, ax = plt.subplots(figsize=(8, 6))
+        # lkhd_good = all_lkhd[good & (all_lkhd > 0)]
+        lkhd_good = all_lkhd[good]
+        if len(lkhd_good) > 0:
+            ax.hist(np.e ** (lkhd_good), bins=50, alpha=0.7, edgecolor="black")
+            ax.set_xlabel("Likelihood", fontsize=12)
+            ax.set_ylabel("Number of Galaxies", fontsize=12)
+            ax.set_title("Likelihood Distribution", fontsize=14)
+            ax.grid(alpha=0.3)
+        plt.tight_layout()
+        plt.savefig(
+            os.path.join(self.config.plotpath, f"{self.outbase}_lkhd_hist.png"), dpi=300
+        )
+        plt.close()
+
+        # Plot 5: zred error distribution
+        fig, ax = plt.subplots(figsize=(8, 6))
+        ax.hist(all_zred_e[good], bins=50, alpha=0.7, edgecolor="black")
+        ax.set_xlabel("zred_e", fontsize=12)
+        ax.set_ylabel("Number of Galaxies", fontsize=12)
+        ax.set_title("Photometric Redshift Error Distribution", fontsize=14)
+        ax.grid(alpha=0.3)
+        plt.tight_layout()
+        plt.savefig(
+            os.path.join(self.config.plotpath, f"{self.outbase}_zred_e_hist.png"),
+            dpi=300,
+        )
+        plt.close()
+
+        self.config.logger.info("QA plots saved to %s" % self.config.plotpath)
+
     def _worker(self, index):
         """
         Do the run on a specific pixel index from the galaxy table.

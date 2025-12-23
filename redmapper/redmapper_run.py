@@ -145,11 +145,133 @@ class RedmapperRun(object):
         # Reset the nside in the config file
         self.config.d.nside = nside_orig
 
+        # Generate QA plots if requested
+        if hasattr(self.config, 'more_qa_plots') and self.config.more_qa_plots and consolidate:
+            self._make_qa_plots(finalfile)
+
         # And done
         if consolidate_like:
             return (finalfile, likefile)
         else:
             return finalfile
+
+    def _make_qa_plots(self, finalfile):
+        """
+        Generate QA plots for the redmapper run.
+
+        Parameters
+        ----------
+        finalfile: `str`
+           Path to the final consolidated catalog file
+        """
+        try:
+            import matplotlib.pyplot as plt
+        except ImportError:
+            self.config.logger.warning("matplotlib not available, skipping QA plots")
+            return
+
+        if not hasattr(self.config, 'plotpath') or self.config.plotpath is None:
+            self.config.logger.warning("plotpath not set in config, skipping QA plots")
+            return
+
+        if not os.path.exists(self.config.plotpath):
+            os.makedirs(self.config.plotpath)
+
+        if finalfile is None or not os.path.isfile(finalfile):
+            self.config.logger.warning("Final catalog file not found, skipping QA plots")
+            return
+
+        self.config.logger.info("Generating redmapper run QA plots...")
+
+        # Read the catalog
+        cat = Catalog.from_fits_file(finalfile)
+
+        if cat.size == 0:
+            self.config.logger.warning("Empty catalog, skipping QA plots")
+            return
+
+        # Plot 1: Lambda distribution
+        fig, ax = plt.subplots(figsize=(8, 6))
+        ax.hist(cat.Lambda, bins=50, alpha=0.7, edgecolor='black', range=(0, 200))
+        ax.set_xlabel(r'$\lambda$ (Richness)', fontsize=12)
+        ax.set_ylabel('Number of Clusters', fontsize=12)
+        ax.set_title('Cluster Richness Distribution', fontsize=14)
+        ax.set_yscale('log')
+        ax.grid(alpha=0.3)
+        plt.tight_layout()
+        plt.savefig(os.path.join(self.config.plotpath, f'{self.config.d.outbase}_lambda_dist.png'), dpi=300)
+        plt.close()
+
+        # Plot 2: Redshift distribution
+        fig, ax = plt.subplots(figsize=(8, 6))
+        ax.hist(cat.z_lambda, bins=50, alpha=0.7, edgecolor='black')
+        ax.set_xlabel(r'$z_\lambda$ (Cluster Redshift)', fontsize=12)
+        ax.set_ylabel('Number of Clusters', fontsize=12)
+        ax.set_title('Cluster Redshift Distribution', fontsize=14)
+        ax.grid(alpha=0.3)
+        plt.tight_layout()
+        plt.savefig(os.path.join(self.config.plotpath, f'{self.config.d.outbase}_z_dist.png'), dpi=300)
+        plt.close()
+
+        # Plot 3: Lambda vs z scatter plot
+
+        fig, ax = plt.subplots(figsize=(8, 6))
+        ax.hexbin(cat.z_lambda, cat.Lambda, gridsize=(50, 50), cmap='Reds', mincnt=1, yscale='log')
+        ax.set_xlabel(r'$z_\lambda$ (Cluster Redshift)', fontsize=12)
+        ax.set_ylabel(r'$\lambda$ (Richness)', fontsize=12)
+        ax.set_title('Richness vs Redshift', fontsize=14)
+        cbar = plt.colorbar(ax.collections[0], ax=ax)
+        cbar.set_label('Number of Clusters', fontsize=10)
+        plt.tight_layout()
+        plt.savefig(os.path.join(self.config.plotpath, f'{self.config.d.outbase}_lambda_vs_z.png'), dpi=300)
+        plt.close()
+
+        # Plot 4: Spatial distribution
+        # Calculate RA and Dec ranges to set aspect ratio = 1
+        ra_range = cat.ra.max() - cat.ra.min()
+        dec_range = cat.dec.max() - cat.dec.min()
+        aspect_ratio = ra_range / dec_range if dec_range > 0 else 1.0
+        fig_height = 8
+        fig_width = fig_height * aspect_ratio
+        
+        fig, ax = plt.subplots(figsize=(fig_width, fig_height))
+        scatter = ax.scatter(cat.ra, cat.dec, c=cat.z_lambda, s=10, alpha=0.6, cmap='Reds')
+        ax.set_xlabel('RA (degrees)', fontsize=12)
+        ax.set_ylabel('Dec (degrees)', fontsize=12)
+        ax.set_title('Spatial Distribution of Clusters (colored by redshift)', fontsize=14)
+        ax.set_aspect('equal', adjustable='box')
+        ax.invert_xaxis()
+        cbar = plt.colorbar(scatter, ax=ax)
+        cbar.set_label(r'$z_\lambda$', fontsize=10)
+        plt.tight_layout()
+        plt.savefig(os.path.join(self.config.plotpath, f'{self.config.d.outbase}_spatial_dist.png'), dpi=300)
+        plt.close()
+
+        # Plot 5: Redshift error distribution
+        if hasattr(cat, 'z_lambda_e'):
+            fig, ax = plt.subplots(figsize=(8, 6))
+            ax.hist(cat.z_lambda_e, bins=50, alpha=0.7, edgecolor='black')
+            ax.set_xlabel(r'$\sigma_{z_\lambda}$ (Redshift Error)', fontsize=12)
+            ax.set_ylabel('Number of Clusters', fontsize=12)
+            ax.set_title('Cluster Redshift Error Distribution', fontsize=14)
+            ax.grid(alpha=0.3)
+            plt.tight_layout()
+            plt.savefig(os.path.join(self.config.plotpath, f'{self.config.d.outbase}_z_err_dist.png'), dpi=300)
+            plt.close()
+
+        # Plot 6: Maskfrac distribution
+        if hasattr(cat, 'maskfrac'):
+            fig, ax = plt.subplots(figsize=(8, 6))
+            ax.hist(cat.maskfrac, bins=50, alpha=0.7, edgecolor='black', range=(0, 1))
+            ax.set_xlabel('Mask Fraction', fontsize=12)
+            ax.set_ylabel('Number of Clusters', fontsize=12)
+            ax.set_title('Mask Fraction Distribution', fontsize=14)
+            ax.grid(alpha=0.3)
+            plt.tight_layout()
+            plt.savefig(os.path.join(self.config.plotpath, f'{self.config.d.outbase}_maskfrac_dist.png'), dpi=300)
+            plt.close()
+
+        self.config.logger.info("QA plots saved to %s" % self.config.plotpath)
 
     def _get_pixel_splits(self):
         """

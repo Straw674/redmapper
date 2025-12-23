@@ -554,6 +554,7 @@ class Cluster(Entry):
         # set values and return
 
         self.Lambda = lam
+        # self.lam_unscaled = lam_unscaled
         self.r_lambda = rlam
         if calc_err:
             self.Lambda_e = lam_err
@@ -860,6 +861,102 @@ class Cluster(Entry):
                        bkg=self.bkg,
                        cbkg=self.cbkg,
                        neighbors=self.neighbors)
+
+    def calc_richness_wo_mask(self, calc_err=True, index=None):
+        """
+        Calculate the richness for the cluster.
+
+        Parameters
+        ----------
+        calc_err: `bool`, optional
+           Calculate the richness error?  Default is True.
+        index: `np.array`, optional
+           Integer array of neighbor indices.  Default is None (all).
+
+        Returns
+        -------
+        lam: `float`
+           Cluster richness.  Will be < 0 when no cluster found.
+        """
+        #set index for slicing self.neighbors
+        if index is not None:
+            idx = index
+        else:
+            idx = np.arange(len(self.neighbors))
+
+        maxmag = self.mstar - 2.5 * np.log10(self.config.lval_reference)
+
+        self.neighbors.chisq[idx] = self.zredstr.calculate_chisq(self.neighbors[idx], self._redshift)
+        rho = chisq_pdf(self.neighbors.chisq[idx], self.zredstr.ncol)
+        nfw = self._calc_radial_profile(idx=idx)
+        phi = self._calc_luminosity(maxmag, idx=idx) #phi is lumwt in the IDL code
+        ucounts = (2*np.pi*self.neighbors.r[idx]) * nfw * phi * rho
+        bcounts = self.calc_bkg_density(self.neighbors.r[idx], self.neighbors.chisq[idx],
+                                        self.neighbors.refmag[idx])
+
+        theta_i = calc_theta_i(self.neighbors.refmag[idx], self.neighbors.refmag_err[idx],
+                               maxmag, self.zredstr.limmag)
+
+        try:
+            w = theta_i * self.neighbors.pfree[idx]
+        except AttributeError:
+            w = theta_i * np.ones_like(ucounts)
+
+        richness_obj = Solver(self.r0, self.beta, ucounts, bcounts,
+                              self.neighbors.r[idx], w, rsig=self.config.rsig)
+
+        # Call the solving routine
+        # this returns five items: lam_obj, p, pmem, rlam, theta_r
+        # Note that pmem used to be called "wvals" in IDL code
+        # pmem = p * pfree * theta_i * theta_r
+        lam, p, pmem, rlam, theta_r = richness_obj.solve_nfw()
+
+        # reset before setting subsets
+        self.neighbors.theta_i[:] = 0.0
+        self.neighbors.theta_r[:] = 0.0
+        self.neighbors.p[:] = 0.0
+        self.neighbors.pcol[:] = 0.0
+        self.neighbors.pmem[:] = 0.0
+
+        # This also checks for crazy invalid values
+        if lam < 0.0 or pmem.max() == 0.0:
+            lam = -1.0
+            lam_err = -1.0
+            self.scaleval = -1.0
+        else:
+            # Only do this computation if we have a valid measurement
+            bar_pmem = np.sum(pmem**2.0)/np.sum(pmem)
+
+            self.scaleval = np.absolute(lam / np.sum(pmem))
+
+            self.lam_unscaled = lam / self.scaleval
+
+            # calculate pcol -- color only.  Don't need to worry about nfw norm!
+            ucounts = rho*phi
+
+            pcol = ucounts * lam/(ucounts * lam + bcounts)
+            bad, = np.where((self.neighbors.r[idx] > rlam) | (self.neighbors.refmag[idx] > maxmag) |
+                            (self.neighbors.refmag[idx] > self.zredstr.limmag) | (~np.isfinite(pcol)))
+            pcol[bad] = 0.0
+
+            # and set the values
+            self.neighbors.theta_i[idx] = theta_i
+            self.neighbors.theta_r[idx] = theta_r
+            self.neighbors.p[idx] = p
+            self.neighbors.pcol[idx] = pcol
+            self.neighbors.pmem[idx] = pmem
+
+        # set values and return
+
+        self.Lambda = lam
+        self.r_lambda = rlam
+        if calc_err:
+            self.Lambda_e = lam_err
+        else:
+            self.Lambda_e = 0.0
+
+        return lam
+
 
 class ClusterCatalog(Catalog):
     """

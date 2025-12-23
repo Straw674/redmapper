@@ -257,3 +257,128 @@ class SelectSpecRedGalaxies(object):
             redmapper_name = 'redgals_%s-%s' % (self.config.bands[j], self.config.bands[j + 1])
             fig.savefig(self.config.redmapper_filename(redmapper_name, paths=(self.config.plotpath,), filetype='png'))
             plt.close(fig)
+
+        (not_use,) = np.where(~mark)
+        fit_result_color = "#1f77b4"
+
+        for m in range(nmodes):
+            j = self.config.calib_colormem_colormodes[m]
+
+            fig, ax = plt.subplots(figsize=(12, 8), dpi=300)
+
+            ax.scatter(
+                gals.z[not_use],
+                galcolor[not_use, j],
+                c="#cccccc",     
+                marker="o",       
+                s=4,              
+                edgecolors="none",
+                alpha=0.5,
+                label="Rejected",
+                zorder=1          
+            )
+
+            ax.scatter(
+                gals.z[use],
+                galcolor[use, j],
+                c="#ff7f0e",     
+                marker="o",
+                s=4, 
+                edgecolors="none",
+                alpha=0.5,        
+                label="Selected",
+                zorder=2
+            )
+
+            xvals = np.arange(zrange[0], zrange[1], 0.01)
+            spl = CubicSpline(nodes, meancol[:, j])
+            mean_model = spl(xvals)
+            spl_scatter = CubicSpline(nodes, meancol_scatter[:, j])
+            scatter_vals = spl_scatter(xvals)
+            nsig = self.config.calib_redspec_nsig
+
+            ax.fill_between(
+                xvals,
+                mean_model - nsig * scatter_vals,
+                mean_model + nsig * scatter_vals,
+                color=fit_result_color, 
+                alpha=0.15,
+                edgecolor="none",
+                label=rf"{nsig}$\sigma$ Region",
+                zorder=3
+            )
+
+            ref_vals = self.redGalInitialColors(self.config.bands[j], self.config.bands[j + 1], xvals)
+            ax.plot(
+                xvals,
+                ref_vals,
+                color=fit_result_color,
+                linestyle="--",    
+                linewidth=2,
+                alpha=0.8,
+                label="Initial Template",
+                zorder=4
+            )
+
+            ax.plot(
+                xvals, 
+                mean_model, 
+                color=fit_result_color,  
+                lw=2.5,           
+                linestyle="-",
+                label="Fitted Mean Model",
+                zorder=5
+            )
+
+ 
+            ax.scatter(
+                nodes, 
+                meancol[:, j], 
+                color=fit_result_color, 
+                marker="X",         
+                s=60,
+                label="Nodes",
+                zorder=6
+            )
+
+            for zbound in self.config.calib_colormem_zbounds:
+                ax.axvline(zbound, ls=":", lw=1.5, color=fit_result_color, zorder=3)
+
+            ax.set_xlim(self.config.zrange)
+            
+            st = np.argsort(galcolor[:, j])
+            ymin = galcolor[st[int(0.01 * gals.size)], j]
+            ymax = galcolor[st[int(0.99 * gals.size)], j]
+            margin = (ymax - ymin) * 0.1
+            ax.set_ylim(ymin - margin, ymax + margin)
+
+            band_label = f"{self.config.bands[j]} - {self.config.bands[j + 1]}"
+            ax.set_xlabel(r"$z_{\mathrm{spec}}$", fontsize=14) 
+            ax.set_ylabel(band_label, fontsize=14)
+            ax.set_title(f"Red Sequence Calibration: {band_label}", fontsize=16, pad=15)
+
+            ax.grid(True, which='major', linestyle='-', linewidth=0.7, color='0.9')
+            ax.grid(True, which='minor', linestyle=':', linewidth=0.5, color='0.95')
+            ax.minorticks_on() 
+
+            ax.legend(
+                loc="upper left", 
+                fontsize=11, 
+                frameon=True, 
+                framealpha=0.9, 
+                edgecolor='gray',
+                fancybox=True
+            )
+
+            redmapper_name = "redgals_selection_%s-%s" % (
+                self.config.bands[j],
+                self.config.bands[j + 1],
+            )
+            
+            fig.savefig(
+                self.config.redmapper_filename(
+                    redmapper_name, paths=(self.config.plotpath,), filetype="png"
+                ),
+                bbox_inches='tight'
+            )
+            plt.close(fig)

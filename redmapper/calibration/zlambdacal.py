@@ -210,6 +210,10 @@ class ZLambdaCalibrator(object):
 
         Output goes to self.config.zlambdafile.
         """
+        # Import plotting libraries if needed
+        if self.config.more_qa_plots:
+            import matplotlib.pyplot as plt
+            os.makedirs(self.config.plotpath, exist_ok=True)
 
         cat = ClusterCatalog.from_catfile(self.config.catfile, cosmo=self.config.cosmo)
 
@@ -232,6 +236,20 @@ class ZLambdaCalibrator(object):
                                "increase config.calib_zlambda_nodesize.")
 
         cat = cat[use]
+
+        # QA plot: Initial z_spec vs z_lambda
+        if self.config.more_qa_plots:
+            fig, ax = plt.subplots(figsize=(8, 8))
+            ax.scatter(cat.z, cat.z_lambda, alpha=0.5, s=10)
+            ax.plot([cat.z.min(), cat.z.max()], [cat.z.min(), cat.z.max()], 'r--', lw=2, label='1:1')
+            ax.set_xlabel('$z_{spec}$', fontsize=14)
+            ax.set_ylabel('$z_\lambda$ (uncorrected)', fontsize=14)
+            ax.set_title('Initial Spec-z vs Photo-z', fontsize=16)
+            ax.legend()
+            ax.grid(alpha=0.3)
+            plt.tight_layout()
+            plt.savefig(os.path.join(self.config.plotpath, 'zlambda_initial_comparison.png'), dpi=300)
+            plt.close()
 
         # we have two runs, first "<zlambda|ztrue>" the second "<ztrue|zlambda>".
 
@@ -316,6 +334,57 @@ class ZLambdaCalibrator(object):
                         out_struct.slope_true[:, ziter] = slope_vals
                         out_struct.scatter_true[:, ziter] = scatter_vals
 
+                    # QA plots after final outlier iteration
+                    if self.config.more_qa_plots and outlier_iter == 1:
+                        fittype_str = "zlambda" if fitType == 0 else f"ztrue_iter{ziter}"
+                        
+                        # Plot residuals vs redshift with fitted correction
+                        fig, axes = plt.subplots(2, 1, figsize=(10, 10))
+                        
+                        # Top panel: residuals
+                        axes[0].scatter(z_fit, dzs, alpha=0.5, s=10, label='All clusters')
+                        spl_delta = CubicSpline(nodes, delta_vals)
+                        z_grid = np.linspace(z_fit.min(), z_fit.max(), 200)
+                        axes[0].plot(z_grid, spl_delta(z_grid), 'r-', lw=2, label='Offset correction')
+                        if self.corrslope:
+                            spl_slope = CubicSpline(slope_nodes, slope_vals)
+                            # Show correction at pivot richness
+                            axes[0].plot(z_grid, spl_delta(z_grid), 'g--', lw=2, label='Offset + slope (pivot)')
+                        axes[0].axhline(0, color='k', ls='--', alpha=0.5)
+                        axes[0].set_xlabel('Redshift', fontsize=12)
+                        axes[0].set_ylabel('$\Delta z = z_{spec} - z_\lambda$', fontsize=12)
+                        axes[0].set_title(f'Residuals ({fittype_str})', fontsize=14)
+                        axes[0].legend()
+                        axes[0].grid(alpha=0.3)
+                        
+                        # Bottom panel: scatter
+                        spl_scatter = CubicSpline(slope_nodes, scatter_vals)
+                        axes[1].plot(z_grid, spl_scatter(z_grid), 'b-', lw=2, label='Fitted scatter')
+                        axes[1].fill_between(z_grid, 0, spl_scatter(z_grid), alpha=0.3)
+                        axes[1].set_xlabel('Redshift', fontsize=12)
+                        axes[1].set_ylabel('$\sigma_z$', fontsize=12)
+                        axes[1].set_title(f'Scatter ({fittype_str})', fontsize=14)
+                        axes[1].legend()
+                        axes[1].grid(alpha=0.3)
+                        
+                        plt.tight_layout()
+                        plt.savefig(os.path.join(self.config.plotpath, f'zlambda_residuals_{fittype_str}.png'), dpi=300)
+                        plt.close()
+                        
+                        # Histogram of residuals
+                        fig, ax = plt.subplots(figsize=(8, 6))
+                        ax.hist(dzs, bins=50, alpha=0.7, edgecolor='black')
+                        ax.axvline(0, color='r', ls='--', lw=2, label='Zero')
+                        ax.axvline(np.median(dzs), color='g', ls='--', lw=2, label=f'Median={np.median(dzs):.4f}')
+                        ax.set_xlabel('$\Delta z = z_{spec} - z_\lambda$', fontsize=12)
+                        ax.set_ylabel('Number of clusters', fontsize=12)
+                        ax.set_title(f'Residual Distribution ({fittype_str})', fontsize=14)
+                        ax.legend()
+                        ax.grid(alpha=0.3)
+                        plt.tight_layout()
+                        plt.savefig(os.path.join(self.config.plotpath, f'zlambda_residual_hist_{fittype_str}.png'), dpi=300)
+                        plt.close()
+
                 # Run the corrections if we're doing ztrue fitType == 1
 
                 if fitType == 1:
@@ -334,6 +403,75 @@ class ZLambdaCalibrator(object):
                         cluster.z_lambda = zlam
                         cluster.z_lambda_e = zlam_e
 
+        # QA plot: Final corrected z_spec vs z_lambda
+        if self.config.more_qa_plots:
+            fig, axes = plt.subplots(1, 2, figsize=(16, 7))
+            
+            # Before correction (cat_orig)
+            axes[0].scatter(cat_orig.z, cat_orig.z_lambda, alpha=0.5, s=10, c=cat_orig.Lambda/cat_orig.scaleval, 
+                           cmap='Reds', vmin=20, vmax=100)
+            axes[0].plot([cat_orig.z.min(), cat_orig.z.max()], [cat_orig.z.min(), cat_orig.z.max()], 
+                        'r--', lw=2, label='1:1')
+            axes[0].set_xlabel('$z_{spec}$', fontsize=14)
+            axes[0].set_ylabel('$z_\lambda$ (uncorrected)', fontsize=14)
+            axes[0].set_title('Before Correction', fontsize=16)
+            axes[0].legend()
+            axes[0].grid(alpha=0.3)
+            
+            # After correction (cat)
+            sc = axes[1].scatter(cat.z, cat.z_lambda, alpha=0.5, s=10, c=cat.Lambda/cat.scaleval, 
+                                cmap='Reds', vmin=20, vmax=100)
+            axes[1].plot([cat.z.min(), cat.z.max()], [cat.z.min(), cat.z.max()], 
+                        'r--', lw=2, label='1:1')
+            axes[1].set_xlabel('$z_{spec}$', fontsize=14)
+            axes[1].set_ylabel('$z_\lambda$ (corrected)', fontsize=14)
+            axes[1].set_title('After Correction', fontsize=16)
+            axes[1].legend()
+            axes[1].grid(alpha=0.3)
+            
+            plt.colorbar(sc, ax=axes[1], label='$\lambda$')
+            plt.tight_layout()
+            plt.savefig(os.path.join(self.config.plotpath, 'zlambda_final_comparison.png'), dpi=300)
+            plt.close()
+            
+            # Plot correction parameters
+            fig, axes = plt.subplots(3, 1, figsize=(10, 12))
+            
+            # Offset
+            axes[0].plot(nodes, out_struct.offset, 'o-', lw=2, label='<z_lambda|z_true>')
+            for i in range(self.config.calib_zlambda_correct_niter):
+                axes[0].plot(nodes, out_struct.offset_true[:, i], 's--', alpha=0.5, label=f'<z_true|z_lambda> iter{i}')
+            axes[0].axhline(0, color='k', ls='--', alpha=0.3)
+            axes[0].set_xlabel('Redshift', fontsize=12)
+            axes[0].set_ylabel('Offset correction', fontsize=12)
+            axes[0].set_title('Offset Correction Parameters', fontsize=14)
+            axes[0].legend()
+            axes[0].grid(alpha=0.3)
+            
+            # Slope
+            axes[1].plot(slope_nodes, out_struct.slope, 'o-', lw=2, label='<z_lambda|z_true>')
+            for i in range(self.config.calib_zlambda_correct_niter):
+                axes[1].plot(slope_nodes, out_struct.slope_true[:, i], 's--', alpha=0.5, label=f'<z_true|z_lambda> iter{i}')
+            axes[1].axhline(0, color='k', ls='--', alpha=0.3)
+            axes[1].set_xlabel('Redshift', fontsize=12)
+            axes[1].set_ylabel('Slope correction', fontsize=12)
+            axes[1].set_title('Slope Correction Parameters', fontsize=14)
+            axes[1].legend()
+            axes[1].grid(alpha=0.3)
+            
+            # Scatter
+            axes[2].plot(slope_nodes, out_struct.scatter, 'o-', lw=2, label='<z_lambda|z_true>')
+            for i in range(self.config.calib_zlambda_correct_niter):
+                axes[2].plot(slope_nodes, out_struct.scatter_true[:, i], 's--', alpha=0.5, label=f'<z_true|z_lambda> iter{i}')
+            axes[2].set_xlabel('Redshift', fontsize=12)
+            axes[2].set_ylabel('$\sigma_z$', fontsize=12)
+            axes[2].set_title('Scatter Parameters', fontsize=14)
+            axes[2].legend()
+            axes[2].grid(alpha=0.3)
+            
+            plt.tight_layout()
+            plt.savefig(os.path.join(self.config.plotpath, 'zlambda_correction_parameters.png'), dpi=300)
+            plt.close()
 
         # Need to do the zred uncorr calibration, blah.
         medfitter = MedZFitter(nodes, cat_orig.z_lambda, cat_orig.zred)

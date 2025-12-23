@@ -251,6 +251,52 @@ class Mask(object):
                 inside2, = np.where(maskgals.m[indices] < -2.5*np.log10(self.config.lval_reference))
                 maskgals.nin[indices, i] = np.sum(theta_r[inside2], dtype=np.float64)
 
+        if self.config.more_qa_plots:
+            import matplotlib.pyplot as plt
+
+            if not os.path.exists(self.config.plotpath):
+                os.makedirs(self.config.plotpath)
+
+            # Plot spatial distribution
+            fig = plt.figure(figsize=(8, 8))
+            ax = fig.add_subplot(111)
+            # Plot a subset
+            sub = np.random.choice(maskgals.size, size=min(maskgals.size, 10000), replace=False)
+            ax.plot(maskgals.x[sub], maskgals.y[sub], 'k.', markersize=1)
+            ax.set_xlabel('X (Mpc)')
+            ax.set_ylabel('Y (Mpc)')
+            ax.set_title('Maskgals Spatial Distribution')
+            ax.set_aspect('equal')
+            fig.savefig(os.path.join(self.config.plotpath, 'maskgals_spatial.png'))
+            plt.close(fig)
+
+            # Plot radial distribution
+            fig = plt.figure(figsize=(8, 6))
+            ax = fig.add_subplot(111)
+            ax.hist(maskgals.r, bins=100, histtype='step')
+            ax.set_xlabel('R (Mpc)')
+            ax.set_title('Maskgals Radial Distribution')
+            fig.savefig(os.path.join(self.config.plotpath, 'maskgals_radial.png'))
+            plt.close(fig)
+
+            # Plot magnitude distribution
+            fig = plt.figure(figsize=(8, 6))
+            ax = fig.add_subplot(111)
+            ax.hist(maskgals.m, bins=100, histtype='step')
+            ax.set_xlabel('m - mstar')
+            ax.set_title('Maskgals Magnitude Distribution')
+            fig.savefig(os.path.join(self.config.plotpath, 'maskgals_mag.png'))
+            plt.close(fig)
+
+            # Plot chisq distribution
+            fig = plt.figure(figsize=(8, 6))
+            ax = fig.add_subplot(111)
+            ax.hist(maskgals.chisq, bins=100, histtype='step')
+            ax.set_xlabel('Chisq')
+            ax.set_title('Maskgals Chisq Distribution')
+            fig.savefig(os.path.join(self.config.plotpath, 'maskgals_chisq.png'))
+            plt.close(fig)
+
         # And save it
 
         hdr = fitsio.FITSHDR()

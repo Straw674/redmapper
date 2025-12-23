@@ -1,6 +1,7 @@
 """Class for calibrating the color-based red-sequence model.
 """
 import os
+from turtle import color
 import numpy as np
 import fitsio
 import time
@@ -226,6 +227,8 @@ class RedSequenceCalibrator(object):
 
         # Make diagnostic plots
         self._make_diagnostic_plots(gals)
+        self._make_red_sequence_evolution_plots()
+        self._make_color_redshift_evolution_plots()
 
     def _compute_startvals(self, nodes, z, val, xval=None, err=None, median=False, fit=False, mincomp=3):
         """
@@ -441,7 +444,8 @@ class RedSequenceCalibrator(object):
                 col_err = gals.galcol_err[:, j]
 
                 # Step over values of r, look for closest to pulls of 1.0
-                err_ratios = np.arange(0.5, 10.0, 0.1)
+                # change the upper limit from 10 to 50
+                err_ratios = np.arange(0.5, 50.0, 0.1)
                 sigma_pulls = np.zeros_like(err_ratios)
                 # Assume first bin median width is close to sig_int
                 sig_int = self.pars.medcol_width[0, j]
@@ -1358,3 +1362,380 @@ class RedSequenceCalibrator(object):
 
         ax.set_xlabel(magname)
         ax.set_ylabel('delta ' + colname)
+
+    # make two other QA plots
+    def _make_red_sequence_evolution_plots(self):
+        """
+        Make red sequence evolution plots showing color-magnitude relations at different redshifts.
+        """
+
+        import matplotlib.pyplot as plt
+
+        # Use config bands to generate color names
+        color_list = [f"{b1}-{b2}" for b1, b2 in zip(self.config.bands[:-1], self.config.bands[1:])]
+        redshift_list = self.pars.pivotmag_z
+        colors = ["purple", "blue", "green", "orange", "red", "brown"]
+
+        ncol = 0
+        for i in range(10):
+            if f"c{i:02d}" in self.pars._ndarray.dtype.names:
+                ncol += 1
+            else:
+                break
+
+        all_pivot_mags = []
+        all_colors = []
+
+        for target_z in redshift_list:
+            pivot_mag = np.interp(target_z, self.pars.pivotmag_z, self.pars.pivotmag)
+            all_pivot_mags.append(pivot_mag)
+            for i in range(min(ncol, len(colors))):
+                col_name = f"c{i:02d}"
+                z_name = f"z{i:02d}"
+                slope_name = f"slope{i:02d}"
+                zs_name = f"zs{i:02d}"
+
+                if all(
+                    name in self.pars._ndarray.dtype.names
+                    for name in [col_name, z_name, slope_name, zs_name]
+                ):
+                    z_nodes_color = self.pars._ndarray[z_name][
+                        self.pars._ndarray[z_name] > 0
+                    ]
+                    color_vals = self.pars._ndarray[col_name][: len(z_nodes_color)]
+                    z_nodes_slope = self.pars._ndarray[zs_name][
+                        self.pars._ndarray[zs_name] > 0
+                    ]
+                    slope_vals = self.pars._ndarray[slope_name][: len(z_nodes_slope)]
+
+                    if len(z_nodes_color) > 1 and len(z_nodes_slope) > 1:
+                        if (
+                            target_z >= z_nodes_color.min()
+                            and target_z <= z_nodes_color.max()
+                        ):
+                            color_at_z = np.interp(target_z, z_nodes_color, color_vals)
+                            slope_at_z = np.interp(target_z, z_nodes_slope, slope_vals)
+
+                            mag_range_full = np.linspace(
+                                pivot_mag - 2, pivot_mag + 2, 100
+                            )
+                            red_sequence = color_at_z + slope_at_z * (
+                                mag_range_full - pivot_mag
+                            )
+                            all_colors.extend(red_sequence)
+
+        mag_min = min(all_pivot_mags) - 2
+        mag_max = max(all_pivot_mags) + 2
+        # color_min = min(all_colors) if all_colors else -1
+        # color_max = max(all_colors) if all_colors else 2
+        color_min, color_max = 0, 2.4
+
+        color_range = color_max - color_min
+        color_min -= color_range * 0.1
+        color_max += color_range * 0.1
+
+        # Calculate optimal subplot grid with fixed 2 rows
+        n_plots = len(redshift_list)
+        n_rows = 2
+        n_cols = (n_plots + n_rows - 1) // n_rows  # Ceiling division
+        
+        fig, axes = plt.subplots(n_rows, n_cols, figsize=(6 * n_cols, 4 * n_rows))
+        
+        # Handle case where there's only one subplot
+        if n_plots == 1:
+            axes = np.array([axes])
+        axes = axes.flatten()
+
+        for plot_idx, target_z in enumerate(redshift_list):
+            ax = axes[plot_idx]
+
+            pivot_mag = np.interp(target_z, self.pars.pivotmag_z, self.pars.pivotmag)
+            mag_range = np.linspace(mag_min, mag_max, 100)
+
+            plotted_any = False
+            for i in range(min(ncol, len(colors))):
+                col_name = f"c{i:02d}"
+                z_name = f"z{i:02d}"
+                slope_name = f"slope{i:02d}"
+                zs_name = f"zs{i:02d}"
+
+                if all(
+                    name in self.pars._ndarray.dtype.names
+                    for name in [col_name, z_name, slope_name, zs_name]
+                ):
+                    z_nodes_color = self.pars._ndarray[z_name][
+                        self.pars._ndarray[z_name] > 0
+                    ]
+                    color_vals = self.pars._ndarray[col_name][: len(z_nodes_color)]
+                    z_nodes_slope = self.pars._ndarray[zs_name][
+                        self.pars._ndarray[zs_name] > 0
+                    ]
+                    slope_vals = self.pars._ndarray[slope_name][: len(z_nodes_slope)]
+
+                    if len(z_nodes_color) > 1 and len(z_nodes_slope) > 1:
+                        if (
+                            target_z >= z_nodes_color.min()
+                            and target_z <= z_nodes_color.max()
+                        ):
+                            color_at_z = np.interp(target_z, z_nodes_color, color_vals)
+                            slope_at_z = np.interp(target_z, z_nodes_slope, slope_vals)
+                            red_sequence = color_at_z + slope_at_z * (
+                                mag_range - pivot_mag
+                            )
+
+                            sigma_at_z = None
+                            if hasattr(self.pars, "sigma") and hasattr(
+                                self.pars, "covmat_z"
+                            ):
+                                try:
+                                    if (
+                                        i < self.pars.sigma.shape[0]
+                                        and i < self.pars.sigma.shape[1]
+                                    ):
+                                        sigma_vals = self.pars.sigma[i, i, :]
+                                        covmat_z = self.pars.covmat_z
+
+                                        valid_mask = (covmat_z > 0) & (sigma_vals > 0)
+                                        if np.any(valid_mask):
+                                            covmat_z_valid = covmat_z[valid_mask]
+                                            sigma_vals_valid = sigma_vals[valid_mask]
+
+                                            if (
+                                                target_z >= covmat_z_valid.min()
+                                                and target_z <= covmat_z_valid.max()
+                                            ):
+                                                sigma_at_z = np.interp(
+                                                    target_z,
+                                                    covmat_z_valid,
+                                                    sigma_vals_valid,
+                                                )
+
+                                                ax.fill_between(
+                                                    mag_range,
+                                                    red_sequence - sigma_at_z,
+                                                    red_sequence + sigma_at_z,
+                                                    alpha=0.3,
+                                                    color=colors[i],
+                                                )
+                                except Exception as e:
+                                    self.config.logger.warning(
+                                        f"Error computing sigma for color {i} at z={target_z:.2f}: {e}"
+                                    )
+
+                            ax.plot(
+                                mag_range,
+                                red_sequence,
+                                "-",
+                                color=colors[i],
+                                linewidth=2,
+                                label=f"{color_list[i]}"
+                                + (
+                                    rf" ($\sigma$={sigma_at_z:.3f})"
+                                    if sigma_at_z
+                                    else ""
+                                ),
+                            )
+                            plotted_any = True
+
+            ax.axvline(
+                pivot_mag, color="black", linestyle="--", alpha=0.5, label="Pivot Mag"
+            )
+            ax.set_title(f"z = {target_z:.1f}", fontsize=12)
+            ax.set_xlabel("Magnitude")
+            ax.set_ylabel("Color")
+
+            if plotted_any:
+                ax.legend(loc="upper right", fontsize=8)
+
+            ax.set_xlim(mag_min, mag_max)
+            ax.set_ylim(color_min, color_max)
+
+        plt.tight_layout()
+        plt.suptitle("Red Sequence Model Evolution with Redshift", fontsize=16, y=1.02)
+
+        fig.savefig(
+            os.path.join(
+                self.config.outpath,
+                self.config.plotpath,
+                "%s_red_sequence_evolution.png" % (self.config.d.outbase),
+            )
+        )
+        plt.close(fig)
+
+    def _make_color_redshift_evolution_plots(self):
+        """
+        Make plots showing color evolution with redshift, overlaying BC03 template colors.
+        
+        This plots the calibrated red sequence colors as a function of redshift
+        at mstar, comparing them with the BC03 template colors used
+        as initial guesses.
+        """
+        import matplotlib.pyplot as plt
+        from astropy.table import Table
+        
+        # Use config bands to generate color names
+        color_list = [f"{b1}-{b2}" for b1, b2 in zip(self.config.bands[:-1], self.config.bands[1:])]
+        colors = ["purple", "blue", "green", "orange", "red", "brown"]
+        
+        # Determine number of colors
+        ncol = 0
+        for i in range(10):
+            if f"c{i:02d}" in self.pars._ndarray.dtype.names:
+                ncol += 1
+            else:
+                break
+        
+        # Load BC03 template if available
+        bc03_data = None
+        
+        if self.config.calib_redgal_template is not None:
+            try:
+                # Construct path relative to redmapper package location
+                # This file is in redmapper/calibration/redsequencecal.py
+                # We want redmapper/data/initcolors/...
+                base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+                template_path = os.path.join(base_dir, 'data', 'initcolors', self.config.calib_redgal_template)
+                
+                bc03_data = Table.read(template_path, format="fits")
+            except Exception as e:
+                self.config.logger.warning(f"Could not load BC03 template: {e}")
+        
+        # Create the figure
+        fig, ax = plt.subplots(1, 1, figsize=(12, 8))
+        
+        plotted_any = False
+        
+        # Plot each color
+        for i in range(min(ncol, len(colors))):
+            col_name = f"c{i:02d}"
+            z_name = f"z{i:02d}"
+            slope_name = f"slope{i:02d}"
+            zs_name = f"zs{i:02d}"
+            
+            if col_name in self.pars._ndarray.dtype.names and z_name in self.pars._ndarray.dtype.names:
+                # Get the nodes where colors are defined
+                z_nodes = self.pars._ndarray[z_name][self.pars._ndarray[z_name] > 0]
+                color_vals = self.pars._ndarray[col_name][:len(z_nodes)]
+                
+                if len(z_nodes) > 1:
+                    # We need to correct the calibrated colors to mstar to match the template
+                    # The calibrated colors are at pivotmag
+                    # C(mstar) = C(pivot) + slope * (mstar - pivot)
+                    
+                    # Get slope
+                    if slope_name in self.pars._ndarray.dtype.names and zs_name in self.pars._ndarray.dtype.names:
+                        zs_nodes = self.pars._ndarray[zs_name][self.pars._ndarray[zs_name] > 0]
+                        slope_vals_raw = self.pars._ndarray[slope_name][:len(zs_nodes)]
+                        # Interpolate slope to z_nodes
+                        slope_at_z = np.interp(z_nodes, zs_nodes, slope_vals_raw)
+                    else:
+                        slope_at_z = np.zeros_like(z_nodes)
+                        
+                    # Get pivotmag and mstar
+                    pivotmag_at_z = np.interp(z_nodes, self.pars.pivotmag_z, self.pars.pivotmag)
+                    mstar_at_z = self.zredstr.mstar(z_nodes)
+                    
+                    # Apply correction
+                    color_vals_mstar = color_vals + slope_at_z * (mstar_at_z - pivotmag_at_z)
+
+                    # Plot the calibrated color nodes (at mstar)
+                    ax.scatter(
+                        z_nodes,
+                        color_vals_mstar,
+                        color=colors[i],
+                        s=50,
+                        alpha=0.7,
+                        zorder=3,
+                        label=f"{color_list[i]}"
+                    )
+                    
+                    # Interpolate between nodes for smooth curve
+                    z_interp = np.linspace(z_nodes.min(), z_nodes.max(), 200)
+                    color_interp = np.interp(z_interp, z_nodes, color_vals_mstar)
+
+                    # Add error region (sigma)
+                    if hasattr(self.pars, "sigma") and hasattr(self.pars, "covmat_z"):
+                        try:
+                            if i < self.pars.sigma.shape[0]:
+                                sigma_vals = self.pars.sigma[i, i, :]
+                                covmat_z = self.pars.covmat_z
+                                
+                                valid_mask = (covmat_z > 0)
+                                if np.any(valid_mask):
+                                    covmat_z_valid = covmat_z[valid_mask]
+                                    sigma_vals_valid = sigma_vals[valid_mask]
+                                    
+                                    # Interpolate sigma to z_interp
+                                    sigma_interp = np.interp(z_interp, covmat_z_valid, sigma_vals_valid)
+                                    
+                                    ax.fill_between(
+                                        z_interp,
+                                        color_interp - sigma_interp,
+                                        color_interp + sigma_interp,
+                                        color=colors[i],
+                                        alpha=0.2,
+                                        zorder=1
+                                    )
+                        except Exception as e:
+                            self.config.logger.warning(f"Error plotting sigma for color {i}: {e}")
+                    
+                    ax.plot(
+                        z_interp,
+                        color_interp,
+                        color=colors[i],
+                        linewidth=2,
+                        alpha=0.8,
+                        zorder=2
+                    )
+                    
+                    plotted_any = True
+                    
+                    # Overlay BC03 template if available
+                    # Use index i directly as it corresponds to the color index in the sequence
+                    if bc03_data is not None and i < bc03_data["COLOR"].shape[1]:
+                        bc03_idx = i
+                        
+                        # Filter BC03 data to the calibration redshift range
+                        z_mask = (bc03_data["Z"] >= self.config.zrange[0]) & \
+                                (bc03_data["Z"] <= self.config.zrange[1])
+                        
+                        if np.any(z_mask):
+                            ax.plot(
+                                bc03_data["Z"][z_mask],
+                                bc03_data["COLOR"][z_mask, bc03_idx],
+                                color=colors[i],
+                                linestyle="--",
+                                linewidth=1.5,
+                                alpha=0.6,
+                                zorder=1,
+                                label=f"{color_list[i]} (BC03 template)"
+                            )
+        
+        if plotted_any:
+            # Configure the plot
+            ax.set_xlabel("Redshift (z)", fontsize=14)
+            ax.set_ylabel("Color at Mstar", fontsize=14)
+            ax.set_title("Red Sequence Color Evolution with Redshift (at Mstar)", fontsize=16)
+            ax.legend(loc="best", fontsize=10, framealpha=0.9)
+            ax.grid(True, alpha=0.3)
+            
+            # Set reasonable axis limits
+            ax.set_xlim(self.config.zrange[0] - 0.02, self.config.zrange[1] + 0.02)
+            
+            # Add vertical lines at pivotmag_z nodes for reference
+            for z_pivot in self.pars.pivotmag_z:
+                ax.axvline(z_pivot, color='gray', linestyle=':', alpha=0.3, linewidth=0.5)
+            
+            plt.tight_layout()
+            
+            # Save the figure
+            output_path = os.path.join(
+                self.config.outpath,
+                self.config.plotpath,
+                f"{self.config.d.outbase}_color_redshift_evolution.png"
+            )
+            fig.savefig(output_path, dpi=300)
+            plt.close(fig)
+        else:
+            self.config.logger.warning("No valid color-redshift data found to plot")
+            plt.close(fig)

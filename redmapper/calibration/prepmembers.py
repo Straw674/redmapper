@@ -3,6 +3,7 @@
 import os
 import numpy as np
 import esutil
+import matplotlib.pyplot as plt
 
 from ..catalog import Entry, Catalog
 from ..galaxy import GalaxyCatalog
@@ -111,5 +112,107 @@ class PrepMembers(object):
             newmem.z[:] += self.config.calib_smooth * self.rng.normal(size=newmem.size)
 
         newmem.to_fits_file(self.config.zmemfile)
+
+        # Generate QA plots if requested
+        if self.config.more_qa_plots:
+            self._make_qa_plots(newmem, mode)
+
+    def _make_qa_plots(self, newmem, mode):
+        """
+        Generate QA plots for member preparation.
+
+        Parameters
+        ----------
+        newmem : `Catalog`
+            Prepared member catalog
+        mode : `str`
+            Mode used for member preparation
+        """
+
+        os.makedirs(self.config.plotpath, exist_ok=True)
+
+        # Plot 1: z vs z_lambda scatter
+        fig, ax = plt.subplots(figsize=(8, 6))
+        ax.hexbin(newmem.z_lambda, newmem.z, gridsize=50, cmap='Reds', mincnt=1)
+        ax.plot([newmem.z_lambda.min(), newmem.z_lambda.max()],
+                [newmem.z_lambda.min(), newmem.z_lambda.max()], 'r--', lw=2, label='1:1')
+        ax.set_xlabel('z_lambda (cluster)', fontsize=12)
+        ax.set_ylabel(f'z (member, mode={mode})', fontsize=12)
+        ax.set_title(f'Member Redshift vs Cluster Redshift (N={newmem.size})', fontsize=14)
+        ax.legend()
+        ax.grid(alpha=0.3)
+        plt.tight_layout()
+        plt.savefig(os.path.join(self.config.plotpath, f'prepmembers_{mode}_z_scatter.png'), dpi=300)
+        plt.close()
+
+        # Plot 2: Probability distributions
+        fig, axes = plt.subplots(1, 2, figsize=(12, 5))
+        axes[0].hist(newmem.p, bins=50, alpha=0.7, color='blue', edgecolor='black')
+        axes[0].axvline(self.config.calib_pcut, color='red', ls='--', lw=2, label=f'pcut={self.config.calib_pcut}')
+        axes[0].set_xlabel('p (membership probability)', fontsize=11)
+        axes[0].set_ylabel('Count', fontsize=11)
+        axes[0].set_title('Membership Probability Distribution', fontsize=12)
+        axes[0].legend()
+        axes[0].set_yscale('log')
+
+        axes[1].hist(newmem.pcol, bins=50, alpha=0.7, color='green', edgecolor='black')
+        axes[1].axvline(self.config.calib_pcut, color='red', ls='--', lw=2, label=f'pcut={self.config.calib_pcut}')
+        axes[1].set_xlabel('pcol (color probability)', fontsize=11)
+        axes[1].set_ylabel('Count', fontsize=11)
+        axes[1].set_title('Color Probability Distribution', fontsize=12)
+        axes[1].legend()
+        axes[1].set_yscale('log')
+        plt.tight_layout()
+        plt.savefig(os.path.join(self.config.plotpath, f'prepmembers_{mode}_probability.png'), dpi=300)
+        plt.close()
+
+        # Plot 3: Color-magnitude diagram (ref band)
+        fig, ax = plt.subplots(figsize=(8, 6))
+        if self.config.nmag >= 2:
+            color = newmem.mag[:, 0] - newmem.mag[:, 1]
+            ax.hexbin(color, newmem.refmag, gridsize=50, cmap='coolwarm', mincnt=1)
+            ax.set_xlabel(f'{self.config.bands[0]} - {self.config.bands[1]} color', fontsize=12)
+        else:
+            ax.hexbin(newmem.refmag, newmem.z, gridsize=50, cmap='coolwarm', mincnt=1)
+            ax.set_xlabel('refmag', fontsize=12)
+        ax.set_ylabel('refmag (i-band)', fontsize=12)
+        ax.invert_yaxis()
+        ax.set_title('Color-Magnitude Diagram', fontsize=14)
+        plt.tight_layout()
+        plt.savefig(os.path.join(self.config.plotpath, f'prepmembers_{mode}_cmd.png'), dpi=300)
+        plt.close()
+
+        # Plot 4: Central vs satellite comparison
+        fig, axes = plt.subplots(1, 2, figsize=(12, 5))
+        central_mask = newmem.central == 1
+        satellite_mask = newmem.central == 0
+
+        axes[0].hist(newmem.refmag[central_mask], bins=30, alpha=0.7, label=f'Central (N={central_mask.sum()})', color='red')
+        axes[0].hist(newmem.refmag[satellite_mask], bins=30, alpha=0.7, label=f'Satellite (N={satellite_mask.sum()})', color='blue')
+        axes[0].set_xlabel('refmag', fontsize=11)
+        axes[0].set_ylabel('Count', fontsize=11)
+        axes[0].set_title('Magnitude Distribution', fontsize=12)
+        axes[0].legend()
+
+        axes[1].hist(newmem.p[central_mask], bins=30, alpha=0.7, label='Central', color='red')
+        axes[1].hist(newmem.p[satellite_mask], bins=30, alpha=0.7, label='Satellite', color='blue')
+        axes[1].set_xlabel('p (membership probability)', fontsize=11)
+        axes[1].set_ylabel('Count', fontsize=11)
+        axes[1].set_title('Probability Distribution', fontsize=12)
+        axes[1].legend()
+        plt.tight_layout()
+        plt.savefig(os.path.join(self.config.plotpath, f'prepmembers_{mode}_central_vs_satellite.png'), dpi=300)
+        plt.close()
+
+        # Plot 5: Redshift distribution
+        fig, ax = plt.subplots(figsize=(8, 6))
+        ax.hist(newmem.z, bins=50, alpha=0.7, color='purple', edgecolor='black')
+        ax.set_xlabel('z (member redshift)', fontsize=12)
+        ax.set_ylabel('Count', fontsize=12)
+        ax.set_title(f'Member Redshift Distribution (mode={mode})', fontsize=14)
+        ax.grid(alpha=0.3)
+        plt.tight_layout()
+        plt.savefig(os.path.join(self.config.plotpath, f'prepmembers_{mode}_z_hist.png'), dpi=300)
+        plt.close()
 
 

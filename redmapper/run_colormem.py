@@ -8,6 +8,7 @@ import numpy as np
 import esutil
 import copy
 import sys
+import matplotlib.pyplot as plt
 
 from .cluster import ClusterCatalog
 from .color_background import ColorBackground
@@ -59,7 +60,13 @@ class RunColormem(ClusterRunner):
         Loop over all clusters and perform RunColormem computations on each cluster.
         """
 
-        return super(RunColormem, self).run(*args, **kwargs)
+        result = super(RunColormem, self).run(*args, **kwargs)
+
+        if self.config.more_qa_plots:
+            # self.config.logger.info("Making colormem QA plots...")
+            self._make_qa_plots()
+
+        return result
 
     def _more_setup(self, *args, **kwargs):
         """
@@ -83,7 +90,8 @@ class RunColormem(ClusterRunner):
         self.cat.z_init = self.cat.z
 
         # need to insert red model and get colormodes...
-        self.cat.add_fields([('redcolor', 'f4', self.config.nmag - 1)])
+        self.cat.add_fields([('redcolor', 'f4', self.config.nmag - 1),
+                             ('p_bcg', 'f4')])
 
         redmodel = Entry.from_fits_file(self.config.redgalmodelfile)
         for j in range(self.config.nmag - 1):
@@ -150,6 +158,50 @@ class RunColormem(ClusterRunner):
             return bad
 
         return bad
+
+    def _make_qa_plots(self):
+        """
+        Make QA plots for the RunColormem run.
+        """
+        
+        if self.cat.size == 0:
+            self.config.logger.info("No clusters in catalog to make QA plots.")
+            return
+
+        # Plot Lambda vs z
+        fig = plt.figure(figsize=(8, 6))
+        ax = fig.add_subplot(111)
+        ax.scatter(self.cat.z, self.cat.Lambda, c='r', marker='o', s=16)
+        ax.set_xlabel(r'$z$', fontsize=16)
+        ax.set_ylabel(r'$\lambda$', fontsize=16)
+        ax.set_title('Colormem Lambda vs Redshift')
+        fig.savefig(self.config.redmapper_filename('colormem_qa', paths=[self.config.plotpath], filetype='png'))
+        plt.close(fig)
+
+        # Plot P_BCG
+        try:
+            fig = plt.figure(figsize=(8, 6))
+            ax = fig.add_subplot(111)
+            ax.hist([item.p_bcg for item in self.cat], bins=20, range=(0, 1))
+            ax.set_xlabel(r'$P_{\mathrm{BCG}}$', fontsize=16)
+            ax.set_ylabel(r'$N_{\mathrm{clusters}}$', fontsize=16)
+            ax.set_title('Colormem P_BCG')
+            fig.savefig(self.config.redmapper_filename('colormem_pbcg_qa', paths=[self.config.plotpath], filetype='png'))
+            plt.close(fig)
+        except Exception as e:
+            self.config.logger.warning("Could not make P_BCG plot: {}".format(e))
+        finally:
+            plt.close(1)
+
+        # Plot Lambda
+        fig = plt.figure(figsize=(8, 6))
+        ax = fig.add_subplot(111)
+        ax.hist(self.cat.Lambda, bins=50, range=(0, 200))
+        ax.set_xlabel(r'$\lambda$', fontsize=16)
+        ax.set_ylabel(r'$N_{\mathrm{clusters}}$', fontsize=16)
+        ax.set_title('Colormem Lambda')
+        fig.savefig(self.config.redmapper_filename('colormem_lambda_qa', paths=[self.config.plotpath], filetype='png'))
+        plt.close(fig)
 
     def _postprocess(self):
         """

@@ -376,6 +376,10 @@ class BackgroundGenerator(object):
             sigma_g[:, :, zbinmark] = sigma_g_sub
             sigma_lng[:, :, zbinmark] = sigma_lng_sub
 
+        # Generate QA plots if requested
+        if hasattr(self.config, 'more_qa_plots') and self.config.more_qa_plots:
+            self._make_qa_plots(sigma_g, sigma_lng)
+
         # And save them
         dtype = [('zbins', 'f4', self.zbins.size),
                  ('zrange', 'f4', 2),
@@ -416,6 +420,102 @@ class BackgroundGenerator(object):
 
         chisq_bkg.to_fits_file(self.config.bkgfile, extname='CHISQBKG', clobber=clobber)
 
+
+    def _make_qa_plots(self, sigma_g, sigma_lng):
+        """
+        Generate QA plots for background calibration.
+
+        Parameters
+        ----------
+        sigma_g: `np.array`
+            3D array of sigma_g(refmag, chisq, z)
+        sigma_lng: `np.array`
+            3D array of sigma_lng(refmag, lnchisq, z)
+        """
+        import matplotlib
+        import matplotlib.pyplot as plt
+
+        if not hasattr(self.config, 'plotpath') or self.config.plotpath is None:
+            self.config.logger.warning("config.plotpath not set, skipping QA plots")
+            return
+
+        os.makedirs(self.config.plotpath, exist_ok=True)
+
+        # Plot 1: sigma_g integrated over chisq, shown as 2D map in (refmag, z) plane
+        fig, ax = plt.subplots(figsize=(12, 8))
+        # Integrate over chisq axis (axis=1)
+        sigma_refmag_z = np.sum(sigma_g, axis=1) * self.config.bkg_chisqbinsize
+        sigma_plot = np.log10(sigma_refmag_z + 1e-10)
+        im = ax.imshow(sigma_plot, origin='lower', aspect='auto',
+                      extent=[self.refmagrange[0], self.refmagrange[1],
+                              self.config.zrange[0], self.config.zrange[1]],
+                      cmap='Blues')
+        ax.set_xlabel('refmag')
+        ax.set_ylabel('Redshift')
+        ax.set_title(r'$\log_{10}(\Sigma_g)$ integrated over $\chi^2$')
+        plt.colorbar(im, ax=ax, label=r'$\log_{10}(\Sigma_g)$ [deg$^{-2}$]')
+        plt.tight_layout()
+        plt.savefig(os.path.join(self.config.plotpath, 'bkg_sigma_g_refmag_z.png'), dpi=300)
+        plt.close()
+        self.config.logger.info("Saved QA plot: bkg_sigma_g_refmag_z.png")
+
+        # Plot 2: 2D maps of sigma_g(refmag, chisq) at different z (keep original)
+        fig, axes = plt.subplots(2, 3, figsize=(18, 12))
+        z_indices_2d = np.linspace(0, self.nzbins - 1, 6, dtype=int)
+
+        for idx, (ax, zi) in enumerate(zip(axes.flat, z_indices_2d)):
+            sigma_plot = np.log10(sigma_g[:, :, zi] + 1e-10)
+            im = ax.imshow(sigma_plot.T, origin='lower', aspect='auto', 
+                          extent=[self.refmagrange[0], self.refmagrange[1],
+                                 self.chisqrange[0], self.chisqrange[1]],
+                          cmap='Reds')
+            ax.set_xlabel('refmag')
+            ax.set_ylabel(r'$\chi^2$')
+            ax.set_title(f'z = {self.zbins[zi]:.3f}')
+            plt.colorbar(im, ax=ax, label=r'$\log_{10}(\Sigma_g)$')
+
+        plt.tight_layout()
+        plt.savefig(os.path.join(self.config.plotpath, 'bkg_sigma_g_2d.png'), dpi=300)
+        plt.close()
+        self.config.logger.info("Saved QA plot: bkg_sigma_g_2d.png")
+
+        # Plot 3: chisq distribution at different z (all curves in one plot)
+        fig, ax = plt.subplots(figsize=(10, 6))
+        n_z_samples = 8
+        z_indices = np.linspace(0, self.nzbins - 1, n_z_samples, dtype=int)
+        colors = plt.cm.coolwarm(np.linspace(0, 1, n_z_samples))
+        
+        for i, zi in enumerate(z_indices):
+            # Integrate over refmag
+            sigma_chisq = np.sum(sigma_g[:, :, zi], axis=0) * self.config.bkg_refmagbinsize
+            ax.plot(self.chisqbins, sigma_chisq, color=colors[i], 
+                   linewidth=1.5, label=f'z={self.zbins[zi]:.2f}')
+        
+        ax.set_xlabel(r'$\chi^2$')
+        ax.set_ylabel(r'$\Sigma_g$ [integrated over refmag, deg$^{-2}$]')
+        ax.set_title(r'$\chi^2$ Distribution at Different Redshifts')
+        ax.set_yscale('log')
+        ax.set_ylim(bottom=1e-5)
+        ax.legend(loc='upper right', fontsize=8, ncol=2)
+        ax.grid(True, alpha=0.3)
+        plt.tight_layout()
+        plt.savefig(os.path.join(self.config.plotpath, 'bkg_chisq_distribution.png'), dpi=300)
+        plt.close()
+        self.config.logger.info("Saved QA plot: bkg_chisq_distribution.png")
+
+        # Plot 4: Total background density vs z
+        fig, ax = plt.subplots(figsize=(10, 6))
+        n_total = np.sum(sigma_g, axis=(0, 1)) * self.config.bkg_refmagbinsize * self.config.bkg_chisqbinsize
+        ax.step(self.zbins, n_total, 'k-', linewidth=2, where='mid')
+        ax.set_xlabel('Redshift')
+        ax.set_ylabel(r'Total $\Sigma_g$ [deg$^{-2}$]')
+        ax.set_title('Total Background Density vs Redshift')
+        ax.grid(True, alpha=0.3)
+
+        plt.tight_layout()
+        plt.savefig(os.path.join(self.config.plotpath, 'bkg_total_vs_z.png'), dpi=300)
+        plt.close()
+        self.config.logger.info("Saved QA plot: bkg_total_vs_z.png")
 
     def _worker(self, zbinmark):
         """
@@ -711,6 +811,10 @@ class ZredBackgroundGenerator(object):
 
         self.config.logger.info("Finished zred background in %.2f seconds" % (time.time() - starttime))
 
+        # Generate QA plots if requested
+        if hasattr(self.config, 'more_qa_plots') and self.config.more_qa_plots:
+            self._make_qa_plots(sigma_g, zredbins, refmagbins, areas, binsizes, galaxies=(refmags[use], zreds[use]))
+
         # save it
 
         dtype = [('zredbins', 'f4', zredbins.size),
@@ -737,4 +841,112 @@ class ZredBackgroundGenerator(object):
         zred_bkg.sigma_g[:, :] = sigma_g
 
         zred_bkg.to_fits_file(self.config.bkgfile, extname='ZREDBKG', clobber=clobber)
+
+    def _make_qa_plots(self, sigma_g, zredbins, refmagbins, areas, binsizes, galaxies=None):
+        """
+        Generate QA plots for zred background calibration.
+
+        Parameters
+        ----------
+        sigma_g: `np.array`
+            2D array of sigma_g(refmag, zred)
+        zredbins: `np.array`
+            Zred bin centers
+        refmagbins: `np.array`
+            Reference magnitude bin centers
+        areas: `np.array`
+            Area per refmag bin
+        binsizes: `float`
+            Bin size in refmag * zred space
+        galaxies: `tuple`, optional
+            Tuple of (refmags, zreds) for raw galaxy data plotting
+        """
+        import matplotlib
+        import matplotlib.pyplot as plt
+
+        if not hasattr(self.config, 'plotpath') or self.config.plotpath is None:
+            self.config.logger.warning("config.plotpath not set, skipping QA plots")
+            return
+
+        os.makedirs(self.config.plotpath, exist_ok=True)
+
+        # Plot 1: sigma_g vs refmag at different zred slices
+        fig, axes = plt.subplots(2, 3, figsize=(15, 10))
+        nzredbins = zredbins.size
+        zred_indices = np.linspace(0, nzredbins - 1, 6, dtype=int)
+        
+        for idx, (ax, zi) in enumerate(zip(axes.flat, zred_indices)):
+            ax.step(refmagbins, sigma_g[:, zi], 'b-', linewidth=1.5, where='mid')
+            ax.set_xlabel('refmag')
+            ax.set_ylabel(r'$\Sigma_g$ [deg$^{-2}$]')
+            ax.set_title(f'zred = {zredbins[zi]:.3f}')
+            ax.set_yscale('log')
+            ax.grid(True, alpha=0.3)
+            ax.set_ylim(bottom=1e-2)
+
+        plt.tight_layout()
+        plt.savefig(os.path.join(self.config.plotpath, 'zredbkg_sigma_g_vs_refmag.png'), dpi=300)
+        plt.close()
+        self.config.logger.info("Saved QA plot: zredbkg_sigma_g_vs_refmag.png")
+
+        # Plot 2: sigma_g vs zred at different refmag slices
+        fig, axes = plt.subplots(2, 3, figsize=(15, 10))
+        nrefmagbins = refmagbins.size
+        refmag_indices = np.linspace(0, nrefmagbins - 1, 6, dtype=int)
+        
+        for idx, (ax, ri) in enumerate(zip(axes.flat, refmag_indices)):
+            ax.step(zredbins, sigma_g[ri, :], 'r-', linewidth=1.5, where='mid')
+            ax.set_xlabel('zred')
+            ax.set_ylabel(r'$\Sigma_g$ [deg$^{-2}$]')
+            ax.set_title(f'refmag = {refmagbins[ri]:.2f}')
+            ax.set_yscale('log')
+            ax.grid(True, alpha=0.3)
+            ax.set_ylim(bottom=1e-2)
+
+        plt.tight_layout()
+        plt.savefig(os.path.join(self.config.plotpath, 'zredbkg_sigma_g_vs_zred.png'), dpi=300)
+        plt.close()
+        self.config.logger.info("Saved QA plot: zredbkg_sigma_g_vs_zred.png")
+
+        # Plot 3: Raw galaxy distribution (if provided)
+        fig, ax = plt.subplots(figsize=(12, 8))
+        hb = ax.hexbin(galaxies[0], galaxies[1], gridsize=50, bins='log', cmap='Reds',
+                        extent=[refmagbins[0], refmagbins[-1], zredbins[0], zredbins[-1]])
+        ax.set_xlabel('refmag')
+        ax.set_ylabel('zred')
+        ax.set_title('Raw Galaxy Distribution (Hexbin)')
+        plt.colorbar(hb, ax=ax, label='log10(N)')
+        
+        plt.tight_layout()
+        plt.savefig(os.path.join(self.config.plotpath, 'zredbkg_raw_hexbin.png'), dpi=300)
+        plt.close()
+        self.config.logger.info("Saved QA plot: zredbkg_raw_hexbin.png")
+
+        # Plot 4: Total background density vs zred
+        fig, ax = plt.subplots(figsize=(10, 6))
+        n_total = np.sum(sigma_g, axis=0) * self.config.bkg_refmagbinsize
+        ax.step(zredbins, n_total, 'k-', linewidth=2, where='mid')
+        ax.set_xlabel('zred')
+        ax.set_ylabel(r'Total $\Sigma_g$ [deg$^{-2}$]')
+        ax.set_title('Total Background Density vs Zred')
+        ax.set_yscale('log')
+        ax.grid(True, alpha=0.3)
+
+        plt.tight_layout()
+        plt.savefig(os.path.join(self.config.plotpath, 'zredbkg_total_vs_zred.png'), dpi=300)
+        plt.close()
+        self.config.logger.info("Saved QA plot: zredbkg_total_vs_zred.png")
+
+        # Plot 5: Area vs refmag
+        fig, ax = plt.subplots(figsize=(10, 6))
+        ax.step(refmagbins, areas, 'g-', linewidth=2, where='mid')
+        ax.set_xlabel('refmag')
+        ax.set_ylabel('Area [deg$^2$]')
+        ax.set_title('Effective Area vs Reference Magnitude')
+        ax.grid(True, alpha=0.3)
+
+        plt.tight_layout()
+        plt.savefig(os.path.join(self.config.plotpath, 'zredbkg_area_vs_refmag.png'), dpi=300)
+        plt.close()
+        self.config.logger.info("Saved QA plot: zredbkg_area_vs_refmag.png")
 

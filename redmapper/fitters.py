@@ -320,7 +320,7 @@ class RedSequenceFitter(object):
                     bounds.append([self._min_scatter, np.inf])
             if self._has_err_ratios:
                 p0 = np.append(p0, self._err_ratio_pars[0])
-                bounds.append([0.5, 10.0])
+                bounds.append([0.5, 50.0])
                 p0 = np.append(p0, self._err_ratio_pars[1])
                 bounds.append([-5.0, 5.0])
 
@@ -1130,7 +1130,7 @@ class ErrorBinFitter(object):
         """
         self._scale_indices = scale_indices
 
-        bounds = [[0.5, 10.0],
+        bounds = [[0.5, 50.0],
                   [-5.0, 5.0]]
 
         res = scipy.optimize.minimize(self,

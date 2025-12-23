@@ -6,6 +6,8 @@ import fitsio
 import numpy as np
 import esutil
 import os
+import matplotlib.pyplot as plt
+from matplotlib.colors import LogNorm
 
 from .catalog import Entry
 from .utilities import interpol
@@ -371,6 +373,14 @@ class ColorBackgroundGenerator(object):
         else:
             areas = np.zeros(refmagbins.size) + self.config.area
 
+        # Prepare QA plotting
+        do_qa = getattr(self.config, 'more_qa_plots', False)
+        if do_qa:
+            plotpath = getattr(self.config, 'plotpath', '.')
+            if not os.path.exists(plotpath):
+                os.makedirs(plotpath)
+            self.config.logger.info("QA plots will be saved to %s" % plotpath)
+
         for i in range(ncol):
             for j in range(i, ncol):
                 if (i == j):
@@ -396,6 +406,48 @@ class ColorBackgroundGenerator(object):
 
                     bc = field.astype(np.float32) / binsizes
                     n = np.sum(bc, axis=1, dtype=np.float64) * colbinsize
+
+                    # QA plot for diagonal
+                    if do_qa:
+                        fig, axes = plt.subplots(2, 2, figsize=(12, 10))
+                        
+                        # Plot 1: bc as 2D histogram
+                        im1 = axes[0, 0].imshow(bc.T, aspect='auto', origin='lower',
+                                                extent=[refmagbins[0], refmagbins[-1],
+                                                       coldiagbins[0], coldiagbins[-1]],
+                                                cmap='Reds', norm=LogNorm(vmin=bc[bc>0].min() if np.any(bc>0) else 1e-10))
+                        axes[0, 0].set_xlabel('refmag')
+                        axes[0, 0].set_ylabel('color_%d' % i)
+                        axes[0, 0].set_title('Background bc (color %d)' % i)
+                        plt.colorbar(im1, ax=axes[0, 0], label='density')
+                        
+                        # Plot 2: n vs refmag
+                        axes[0, 1].plot(refmagbins, n, 'b-')
+                        axes[0, 1].set_xlabel('refmag')
+                        axes[0, 1].set_ylabel('n (integrated counts)')
+                        axes[0, 1].set_title('Integrated counts vs refmag')
+                        axes[0, 1].grid(alpha=0.3)
+                        
+                        # Plot 3: slice at median refmag
+                        mid_refmag = len(refmagbins) // 2
+                        axes[1, 0].plot(coldiagbins, bc[mid_refmag, :], 'r-')
+                        axes[1, 0].set_xlabel('color_%d' % i)
+                        axes[1, 0].set_ylabel('bc')
+                        axes[1, 0].set_title('Color slice at refmag=%.2f' % refmagbins[mid_refmag])
+                        axes[1, 0].grid(alpha=0.3)
+                        
+                        # Plot 4: areas vs refmag
+                        axes[1, 1].plot(refmagbins, areas, 'g-')
+                        axes[1, 1].set_xlabel('refmag')
+                        axes[1, 1].set_ylabel('area (deg²)')
+                        axes[1, 1].set_title('Survey area vs refmag')
+                        axes[1, 1].grid(alpha=0.3)
+                        
+                        plt.tight_layout()
+                        qafile = os.path.join(plotpath, 'colorbkg_diag_%02d.png' % i)
+                        plt.savefig(qafile, dpi=300)
+                        plt.close()
+                        self.config.logger.info("Saved QA plot: %s" % qafile)
 
                     outstr = np.zeros(1, dtype=[('COL1', 'i2'),
                                                 ('COL2', 'i2'),
@@ -455,6 +507,50 @@ class ColorBackgroundGenerator(object):
                     bc = field.astype(np.float32) / binsizes
                     temp = np.sum(bc, axis=2, dtype=np.float64) * colbinsize
                     n = np.sum(temp, axis=1, dtype=np.float64) * colbinsize
+
+                    # QA plot for off-diagonal
+                    if do_qa:
+                        fig, axes = plt.subplots(2, 2, figsize=(12, 10))
+                        
+                        # Plot 1: bc slice at median refmag (color1 vs color2)
+                        mid_refmag = len(refmagbins) // 2
+                        im1 = axes[0, 0].imshow(bc[mid_refmag, :, :].T, aspect='auto', origin='lower',
+                                                extent=[col2bins[0], col2bins[-1],
+                                                       col1bins[0], col1bins[-1]],
+                                                cmap='Reds', norm=LogNorm(vmin=bc[bc>0].min() if np.any(bc>0) else 1e-10))
+                        axes[0, 0].set_xlabel('color_%d' % j)
+                        axes[0, 0].set_ylabel('color_%d' % i)
+                        axes[0, 0].set_title('Background at refmag=%.2f' % refmagbins[mid_refmag])
+                        plt.colorbar(im1, ax=axes[0, 0], label='density')
+                        
+                        # Plot 2: n vs refmag
+                        axes[0, 1].plot(refmagbins, n, 'b-')
+                        axes[0, 1].set_xlabel('refmag')
+                        axes[0, 1].set_ylabel('n (integrated counts)')
+                        axes[0, 1].set_title('Integrated counts vs refmag')
+                        axes[0, 1].grid(alpha=0.3)
+                        
+                        # Plot 3: color1 marginal at median refmag
+                        marginal_col1 = np.sum(bc[mid_refmag, :, :], axis=0)
+                        axes[1, 0].plot(col1bins, marginal_col1, 'r-')
+                        axes[1, 0].set_xlabel('color_%d' % i)
+                        axes[1, 0].set_ylabel('marginal density')
+                        axes[1, 0].set_title('Color %d marginal' % i)
+                        axes[1, 0].grid(alpha=0.3)
+                        
+                        # Plot 4: color2 marginal at median refmag
+                        marginal_col2 = np.sum(bc[mid_refmag, :, :], axis=1)
+                        axes[1, 1].plot(col2bins, marginal_col2, 'g-')
+                        axes[1, 1].set_xlabel('color_%d' % j)
+                        axes[1, 1].set_ylabel('marginal density')
+                        axes[1, 1].set_title('Color %d marginal' % j)
+                        axes[1, 1].grid(alpha=0.3)
+                        
+                        plt.tight_layout()
+                        qafile = os.path.join(plotpath, 'colorbkg_offdiag_%02d_%02d.png' % (i, j))
+                        plt.savefig(qafile, dpi=300)
+                        plt.close()
+                        self.config.logger.info("Saved QA plot: %s" % qafile)
 
                     outstr = np.zeros(1, dtype=[('COL1', 'i2'),
                                                 ('COL2', 'i2'),
