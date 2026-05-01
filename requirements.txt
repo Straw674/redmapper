@@ -1,9 +1,2 @@
-astropy
-matplotlib
-pyyaml
-fitsio
-esutil
-numpy
-scipy
-healsparse
-hpgeom
+# Dependencies have been migrated to pyproject.toml.
+# Please use `uv` for dependency management.

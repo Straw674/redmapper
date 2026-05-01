@@ -1,11 +1,49 @@
 [build-system]
-requires = [
-    "setuptools>=46",
-    "wheel",
-    "numpy",
-    "setuptools_scm>=8",
-]
+requires = ["setuptools>=61.0", "wheel", "numpy", "setuptools_scm>=8"]
 build-backend = "setuptools.build_meta"
+
+[project]
+name = "redmapper"
+dynamic = ["version"]
+description = "Python implementation of redMaPPer cluster finder"
+readme = "README.md"
+authors = [{ name = "Eli Rykoff", email = "erykoff@stanford.edu" }]
+classifiers = [
+    "Intended Audience :: Science/Research",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: MacOS",
+    "Programming Language :: C",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.7",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+]
+requires-python = ">=3.10"
+dependencies = [
+    "astropy",
+    "matplotlib",
+    "pyyaml",
+    "fitsio",
+    "esutil",
+    "numpy",
+    "scipy",
+    "healsparse",
+    "hpgeom",
+]
+
+[project.urls]
+Homepage = "https://github.com/erykoff/redmapper"
 
 [tool.setuptools_scm]
 version_file = "redmapper/_version.py"
+
+[tool.setuptools]
+packages = ["redmapper"]
+zip-safe = true
+
+[tool.setuptools.package-data]
+redmapper = ["data/initcolors/*.fit", "data/mstar/*.fit"]
+
+[dependency-groups]
+dev = ["pytest"]
