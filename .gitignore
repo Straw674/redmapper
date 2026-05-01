@@ -8,3 +8,4 @@ redmapper.egg-info
 .DS_Store
 
 redmapper/_version.py
+.vscode/settings.json
