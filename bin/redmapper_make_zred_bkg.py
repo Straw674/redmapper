@@ -16,8 +16,7 @@ if __name__ == '__main__':
     args = parser.parse_args()
 
     config = redmapper.Configuration(args.configfile)
-    zb = redmapper.ZredBackgroundGenerator(config)
-    zb.run()
+    redmapper.generate_zred_background(config)
 
 
 

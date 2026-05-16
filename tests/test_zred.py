@@ -11,9 +11,9 @@ import os
 
 from redmapper import Configuration
 from redmapper import GalaxyCatalog
-from redmapper import RedSequenceColorPar
-from redmapper import ZredColor
-from redmapper import ZredRunCatalog, ZredRunPixels
+from redmapper import read_redsequence, redsequence_mstar
+from redmapper import compute_zreds, compute_zred
+from redmapper import run_zred_catalog, run_zred_pixels
 
 class ZredTestCase(unittest.TestCase):
     """
@@ -22,13 +22,13 @@ class ZredTestCase(unittest.TestCase):
 
     def test_zred(self):
         """
-        Test redmapper.ZredColor, looping over galaxies.
+        Test redmapper.compute_zred and compute_zreds.
         """
 
         file_path = 'data_for_tests'
 
         zred_filename = 'test_dr8_pars.fit'
-        zredstr = RedSequenceColorPar(file_path + '/' + zred_filename)
+        zredstr = read_redsequence(file_path + '/' + zred_filename)
 
         galaxy_filename = 'test_dr8_gals_with_zred.fit'
         galaxies = GalaxyCatalog.from_fits_file(file_path + '/' + galaxy_filename)
@@ -38,12 +38,10 @@ class ZredTestCase(unittest.TestCase):
         galaxies_input = copy.deepcopy(galaxies)
 
         # start with the first one...
-        zredc = ZredColor(zredstr)
-
-        zredc.compute_zred(galaxies[0])
+        compute_zred(zredstr, galaxies[0])
 
         starttime = time.time()
-        zredc.compute_zreds(galaxies)
+        compute_zreds(zredstr, galaxies)
 
         print("Ran %d galaxies in %.3f seconds" % (galaxies.size,
                                                    time.time() - starttime))
@@ -51,8 +49,8 @@ class ZredTestCase(unittest.TestCase):
         # Only compare galaxies that are brighter than 0.15L* in either old OR new
         # Otherwise, we're just comparing how the codes handle "out-of-range"
         # galaxies, and that does not matter
-        mstar_input = zredstr.mstar(galaxies_input.zred_uncorr)
-        mstar = zredstr.mstar(galaxies.zred_uncorr)
+        mstar_input = redsequence_mstar(zredstr, galaxies_input.zred_uncorr)
+        mstar = redsequence_mstar(zredstr, galaxies.zred_uncorr)
 
         # Don't compare to high redshift because the extrapolation has changed a lot
         ok, = np.where(((galaxies.refmag < (mstar_input - 2.5*np.log10(0.15))) |
@@ -106,9 +104,8 @@ class ZredTestCase(unittest.TestCase):
         except AttributeError:
             galfile = os.path.join(os.path.dirname(config.galfile), tab[0]['filenames'][0])
 
-        zredRuncat = ZredRunCatalog(config)
+        run_zred_catalog(config, galfile, outfile)
 
-        zredRuncat.run(galfile, outfile)
 
         # This exercises the reading code
         gals = GalaxyCatalog.from_galfile(galfile, zredfile=outfile)
@@ -127,9 +124,9 @@ class ZredTestCase(unittest.TestCase):
 
         gals_compare = GalaxyCatalog.from_galfile(galfile, zredfile=zredfile)
 
-        zredstr = RedSequenceColorPar(config.parfile)
-        mstar_input = zredstr.mstar(gals_compare.zred_uncorr)
-        mstar = zredstr.mstar(gals_compare.zred_uncorr)
+        zredstr = read_redsequence(config.parfile)
+        mstar_input = redsequence_mstar(zredstr, gals_compare.zred_uncorr)
+        mstar = redsequence_mstar(zredstr, gals_compare.zred_uncorr)
 
         # Don't compare to high redshift because the extrapolation has changed a lot
         ok, = np.where(((gals_compare.refmag < (mstar_input - 2.5*np.log10(0.15))) |
@@ -152,8 +149,8 @@ class ZredTestCase(unittest.TestCase):
 
         config = Configuration(os.path.join(file_path, configfile))
 
-        config.d.hpix = [2163]
-        config.d.nside = 64
+        config.hpix = [2163]
+        config.nside = 64
         config.border = 0.0
 
         self.test_dir = tempfile.mkdtemp(dir='./', prefix='TestRedmapper-')
@@ -161,18 +158,17 @@ class ZredTestCase(unittest.TestCase):
 
         # FIXME: try an illegal one...
 
-        zredRunpix = ZredRunPixels(config)
-        zredRunpix.run()
+        run_zred_pixels(config)
 
         # Check that the zred file has been built...
 
         self.assertTrue(os.path.isfile(config.zredfile))
 
         # Read in just the galaxies...
-        gals0 = GalaxyCatalog.from_galfile(config.galfile, nside=config.d.nside, hpix=config.d.hpix, border=config.border)
+        gals0 = GalaxyCatalog.from_galfile(config.galfile, nside=config.nside, hpix=config.hpix, border=config.border)
 
         # And with the zreds...
-        gals = GalaxyCatalog.from_galfile(config.galfile, zredfile=config.zredfile, nside=config.d.nside, hpix=config.d.hpix, border=config.border)
+        gals = GalaxyCatalog.from_galfile(config.galfile, zredfile=config.zredfile, nside=config.nside, hpix=config.hpix, border=config.border)
 
         # Confirm they're the same galaxies...
         testing.assert_array_almost_equal(gals0.ra, gals.ra)
@@ -184,11 +180,11 @@ class ZredTestCase(unittest.TestCase):
 
         zredfile = os.path.join(file_path, 'zreds_test', 'dr8_test_zreds_master_table.fit')
         gals_compare = GalaxyCatalog.from_galfile(config.galfile, zredfile=zredfile,
-                                                  nside=config.d.nside, hpix=config.d.hpix, border=config.border)
+                                                  nside=config.nside, hpix=config.hpix, border=config.border)
 
-        zredstr = RedSequenceColorPar(config.parfile)
-        mstar_input = zredstr.mstar(gals_compare.zred_uncorr)
-        mstar = zredstr.mstar(gals_compare.zred_uncorr)
+        zredstr = read_redsequence(config.parfile)
+        mstar_input = redsequence_mstar(zredstr, gals_compare.zred_uncorr)
+        mstar = redsequence_mstar(zredstr, gals_compare.zred_uncorr)
 
         # Don't compare to high redshift because the extrapolation has changed a lot
         ok, = np.where(((gals_compare.refmag < (mstar_input - 2.5*np.log10(0.15))) |

@@ -8,10 +8,10 @@ from redmapper import Entry
 from redmapper import Cluster
 from redmapper import Configuration
 from redmapper import GalaxyCatalog
-from redmapper import Background
-from redmapper import RedSequenceColorPar
-from redmapper import HPMask
-from redmapper import DepthMap
+from redmapper import read_background
+from redmapper import read_redsequence
+from redmapper.mask import get_mask, select_maskgals_sample, compute_maskgals_mark
+from redmapper import depthmap
 from redmapper.utilities import calc_theta_i
 
 class ClusterTestCase(unittest.TestCase):
@@ -40,10 +40,10 @@ class ClusterTestCase(unittest.TestCase):
         cluster.set_neighbors(neighbors)
 
         zred_filename = 'test_dr8_pars.fit'
-        cluster.zredstr = RedSequenceColorPar(file_path + '/' + zred_filename, fine=True)
+        cluster.zredstr = read_redsequence(file_path + '/' + zred_filename, fine=True)
 
         bkg_filename = 'test_bkg.fit'
-        cluster.bkg = Background('%s/%s' % (file_path, bkg_filename))
+        cluster.bkg = read_background('%s/%s' % (file_path, bkg_filename))
 
         hdr=fitsio.read_header(file_path+'/'+filename,ext=1)
         cluster.redshift = hdr['Z']
@@ -56,12 +56,12 @@ class ClusterTestCase(unittest.TestCase):
         cluster.ra = hdr['RA']
         cluster.dec = hdr['DEC']
 
-        mask = HPMask(cluster.config, rng=rng)
-        maskgal_index = mask.select_maskgals_sample(maskgal_index=0)
-        mask.set_radmask(cluster)
+        mask = get_mask(cluster.config, rng=rng)
+        mask['maskgals'], mask['maskgal_index'] = select_maskgals_sample(cluster.config, mask['maskgals_all'], mask['rng'], maskgal_index=0)
+        mask['maskgals'].mark = compute_maskgals_mark(mask['mask_data'], cluster, mask['maskgals'], rng=mask['rng'], config=cluster.config)
 
-        depthstr = DepthMap(cluster.config)
-        depthstr.calc_maskdepth(mask.maskgals, cluster.ra, cluster.dec, cluster.mpc_scale)
+        depth_data = depthmap.read_depth_map(cluster.config)
+        depthmap.compute_maskdepth(depth_data, mask['maskgals'], cluster.ra, cluster.dec, cluster.mpc_scale)
 
         # Test the NFW profile on its own
         #  (this works to 5 decimal places because of the 2*pi*r scaling)
@@ -74,7 +74,7 @@ class ClusterTestCase(unittest.TestCase):
                                               cluster.neighbors.chisq,
                                               cluster.neighbors.refmag)
         # this is cheating here...
-        to_test, = np.where((cluster.neighbors.refmag < cluster.bkg.refmagbins[-1]))
+        to_test, = np.where((cluster.neighbors.refmag < cluster.bkg['refmagbins'][-1]))
 
         richness = cluster.calc_richness(mask)
 

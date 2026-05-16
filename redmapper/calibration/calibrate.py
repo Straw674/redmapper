@@ -1,4 +1,4 @@
-"""Class to run the full red-sequence calibration
+"""Functional interface to run the full red-sequence calibration
 """
 import os
 import numpy as np
@@ -6,630 +6,447 @@ import fitsio
 import copy
 import re
 
-from ..configuration import Configuration
-from ..color_background import ColorBackgroundGenerator
+from ..configuration import Configuration, Config
+from ..color_background import generate_color_background
 from ..catalog import Entry, Catalog
 from ..galaxy import GalaxyCatalog
-from .selectspecred import SelectSpecRedGalaxies
-from .selectspecseeds import SelectSpecSeeds
-from .redsequencecal import RedSequenceCalibrator
-from .centeringcal import WcenCalibrator
-from .zlambdacal import ZLambdaCalibrator
-from .prepmembers import PrepMembers
-from ..zred_runner import ZredRunCatalog, ZredRunPixels
-from ..background import BackgroundGenerator, ZredBackgroundGenerator
-from ..redmapper_run import RedmapperRun
-from ..zlambda import ZlambdaCorrectionPar
-from ..plotting import SpecPlot
-from ..mask import get_mask
-from ..run_colormem import RunColormem
+from .selectspecred import select_spec_red_galaxies_wrapper
+from .selectspecseeds import select_spec_seeds_wrapper
+from .redsequencecal import calibrate_red_sequence
+from .centeringcal import calibrate_wcen
+from .zlambdacal import calibrate_zlambda
+from .prepmembers import prep_members
+from ..zred_runner import run_zred_catalog, run_zred_pixels
+from ..background import generate_background, generate_zred_background
+from ..redmapper_run import redmapper_run
+from ..zlambda import read_zlambda_correction, apply_zlambda_correction
+from ..plotting import plot_spec_comparison
+from ..mask import get_mask, gen_maskgals
+from ..run_colormem import run_colormem
 from ..utilities import getMemoryString
 from .._version import __version__
+from ..logger import logger
 
-class RedmapperCalibrator(object):
+def calibrate_redmapper(conf):
     """
-    Class to perform red-sequence calibration
+    Run the full red-sequence calibration.
+
+    Parameters
+    ----------
+    conf: `str` or `redmapper.Config`
+       Configuration yaml file or configuration object
     """
+    if not isinstance(conf, Config):
+        config = Configuration(conf)
+    else:
+        config = conf
 
-    def __init__(self, conf):
-        """
-        Instantiate a RedmapperCalibrator
+    logger.info("Calibrating with version %s" % (__version__))
+    rng = np.random.RandomState(seed=config.randomseed)
 
-        Parameters
-        ----------
-        conf: `str` or `redmapper.Calibration`
-           Configuration yaml file or configuration object
-        """
-        if not isinstance(conf, Configuration):
-            self.config = Configuration(conf)
+    # 1. Select the red galaxies to start
+    config.redgalfile = config.redmapper_filename('zspec_redgals')
+    config.redgalmodelfile = config.redmapper_filename('zspec_redgals_model')
+
+    if os.path.isfile(config.redgalfile):
+        logger.info("%s already there.  Skipping..." % (config.redgalfile))
+    else:
+        logger.info("Selecting red galaxies from spectra...")
+        select_spec_red_galaxies_wrapper(config)
+
+    # 2. Make a color background
+    config.bkgfile_color = config.redmapper_filename('bkg_color')
+
+    if os.path.isfile(config.bkgfile_color):
+        logger.info("%s already there.  Skipping..." % (config.bkgfile_color))
+    else:
+        logger.info("Constructing color background...")
+        generate_color_background(config)
+
+    # 3. Generate maskgals
+    config.maskgalfile = config.redmapper_filename('maskgals')
+
+    if os.path.isfile(config.maskgalfile):
+        logger.info("%s already there.  Skipping..." % (config.maskgalfile))
+    else:
+        logger.info("Constructing maskgals...")
+        gen_maskgals(config, config.maskgalfile, rng=rng)
+
+    # 4. Do the color-lambda training
+    config.zmemfile = config.redmapper_filename('iter0_colormem_pgt%4.2f_lamgt%02d' % 
+                                                (config.calib_pcut, config.calib_colormem_minlambda))
+
+    if os.path.isfile(config.zmemfile):
+        logger.info("%s already there.  Skipping..." % (config.zmemfile))
+    else:
+        logger.info("Doing color-lambda training...")
+        cat, members = run_colormem(config)
+        use, = np.where(members.pcol > config.calib_pcut)
+        savemem = members[use]
+        savemem.to_fits_file(config.zmemfile)
+        cat.to_fits_file(config.redmapper_filename('colorcat'))
+
+    # 5. Generate the spec seed file
+    config.seedfile = config.redmapper_filename('specseeds_train')
+
+    if os.path.isfile(config.seedfile):
+        logger.info("%s already there.  Skipping..." % (config.seedfile))
+    else:
+        logger.info("Generating spectroscopic seeds (training spec)...")
+        select_spec_seeds_wrapper(config, usetrain=True)
+
+    # Save original outbase for iterations
+    outbase_orig = config.outbase
+
+    # 6. Run calibration iterations
+    for iteration in range(1, config.calib_niter + 1):
+        # Run the calibration iteration
+        _run_calibration_iteration(config, iteration, rng)
+
+        # Clean out the members
+        redmapper_name = 'zmem_pgt%4.2f_lamgt%02d' % (config.calib_pcut, int(config.calib_minlambda))
+        config.zmemfile = config.redmapper_filename(redmapper_name)
+        if os.path.isfile(config.zmemfile):
+            logger.info("%s already there.  Skipping..." % (config.zmemfile))
         else:
-            self.config = conf
-
-        print("Calibrating with version %s" % (__version__))
-
-    def run(self):
-        """
-        Run the red-sequence calibration.
-        """
-
-        rng = np.random.RandomState(seed=self.config.randomseed)
-
-        # Select the red galaxies to start
-        self.config.redgalfile = self.config.redmapper_filename('zspec_redgals')
-        self.config.redgalmodelfile = self.config.redmapper_filename('zspec_redgals_model')
-
-        if os.path.isfile(self.config.redgalfile):
-            self.config.logger.info("%s already there.  Skipping..." % (self.config.redgalfile))
-        else:
-            self.config.logger.info("Selecting red galaxies from spectra...")
-            selred = SelectSpecRedGalaxies(self.config)
-            selred.run()
-
-        # Make a color background
-        self.config.bkgfile_color = self.config.redmapper_filename('bkg_color')
-
-        if os.path.isfile(self.config.bkgfile_color):
-            self.config.logger.info("%s already there.  Skipping..." % (self.config.bkgfile_color))
-        else:
-            self.config.logger.info("Constructing color background...")
-            cbg = ColorBackgroundGenerator(self.config)
-            cbg.run()
-
-        # Generate maskgals
-        self.config.maskgalfile = self.config.redmapper_filename('maskgals')
-
-        if os.path.isfile(self.config.maskgalfile):
-            self.config.logger.info("%s already there.  Skipping..." % (self.config.maskgalfile))
-        else:
-            self.config.logger.info("Constructing maskgals...")
-            # This will generate the maskgalfile if it isn't found
-            mask = get_mask(self.config, include_maskgals=False, rng=rng)
-            mask.gen_maskgals(self.config.maskgalfile)
-
-        # Do the color-lambda training.
-        self.config.zmemfile = self.config.redmapper_filename('iter0_colormem_pgt%4.2f_lamgt%02d' % (self.config.calib_pcut, self.config.calib_colormem_minlambda))
-
-        if os.path.isfile(self.config.zmemfile):
-            self.config.logger.info("%s already there.  Skipping..." % (self.config.zmemfile))
-        else:
-            self.config.logger.info("Doing color-lambda training...")
-            rcm = RunColormem(self.config)
-            rcm.run()
-            rcm.output_training()
-
-        # Generate the spec seed file
-        self.config.seedfile = self.config.redmapper_filename('specseeds_train')
-
-        if os.path.isfile(self.config.seedfile):
-            self.config.logger.info("%s already there.  Skipping..." % (self.config.seedfile))
-        else:
-            self.config.logger.info("Generating spectroscopic seeds (training spec)...")
-            sss = SelectSpecSeeds(self.config)
-            sss.run(usetrain=True)
-        calib_iteration = RedmapperCalibrationIteration(self.config, rng=rng)
-
-        for iteration in range(1, self.config.calib_niter + 1):
-            # Run the calibration iteration
-            calib_iteration.run(iteration)
-
-            # Clean out the members
-            # Note that the outbase is still the modified version
-            redmapper_name = 'zmem_pgt%4.2f_lamgt%02d' % (self.config.calib_pcut, int(self.config.calib_minlambda))
-            self.config.zmemfile = self.config.redmapper_filename(redmapper_name)
-            if os.path.isfile(self.config.zmemfile):
-                self.config.logger.info("%s already there.  Skipping..." % (self.config.zmemfile))
-            else:
-                self.config.logger.info("Preparing members for next calibration...")
-                ## FIXME
-                prep_members = PrepMembers(self.config, rng=rng)
-                prep_members.run('z_init')
-
-            # Reset outbase here
-            self.config.d.outbase = self.config.outbase
-
-            if iteration == 1:
-                # If this is the first iteration, generate a new seedfile
-                new_seedfile = self.config.redmapper_filename('cut_specseeds')
-                if os.path.isfile(new_seedfile):
-                    self.config.logger.info("%s already there.  Skipping..." % (new_seedfile))
-                else:
-                    self.config.logger.info("Generating cut specseeds...")
-                    seeds = GalaxyCatalog.from_fits_file(self.config.seedfile)
-                    cat = GalaxyCatalog.from_fits_file(self.config.catfile)
-
-                    use, = np.where(cat.Lambda > self.config.percolation_minlambda)
-
-                    i0, i1, dd = seeds.match_many(cat.ra[use], cat.dec[use], 0.5/3600., maxmatch=1)
-                    seeds.to_fits_file(new_seedfile, indices=i1)
-
-                self.config.seedfile = new_seedfile
-
-        # Prep for final iteration
-
-        # Generate full specseeds...
-        self.config.seedfile = self.config.redmapper_filename('specseeds')
-
-        if os.path.isfile(self.config.seedfile):
-            self.config.logger.info("%s already there.  Skipping..." % (self.config.seedfile))
-        else:
-            self.config.logger.info("Generating spectroscopic seeds (full spec)...")
-            sss = SelectSpecSeeds(self.config)
-            sss.run(usetrain=False)
-
-        calib_iteration_final = RedmapperCalibrationIterationFinal(self.config)
-        calib_iteration_final.run(self.config.calib_niter)
-
-        # Output a configuration file
-        new_bkgfile, new_zreds = self.output_configuration()
-
-        # Generate a full background
-        if new_bkgfile:
-            # Note that the config file has been updated!
-            self.config.logger.info("Running full background...")
-
-            self.config.d.hpix = []
-            self.config.d.nside = 0
-
-            # Erase any configured area which is only used to override the
-            # galfile area in the case when we are calibrating a subregion
-            # without a depthmap
-            self.config.area = self.config.galfile_area
-
-            bkg_gen = BackgroundGenerator(self.config)
-            bkg_gen.run(deepmode=True)
-            self.config.logger.info("Remember to run zreds and zred background before running the full cluster finder.")
-        else:
-            if new_zreds:
-                self.config.logger.info("Remember to run zreds before running the full cluster finder.  No need to recompute the background.")
-            else:
-                self.config.logger.info("Calibration done on full footprint, so background and zreds are already available.")
-
-        # Run halos if desired (later)
-
-    def output_configuration(self):
-        """
-        Output a configuration yaml file that has all the calibration products
-        inserted.
-        """
-
-        new_zreds = False
-        new_bkgfile = False
-
-        # Compute the path that the cluster finder will be run in
-
-        calpath = os.path.abspath(self.config.outpath)
-        calparent = os.path.normpath(os.path.join(calpath, os.pardir))
-        calpath_only = os.path.basename(os.path.normpath(calpath))
-
-        if calpath_only == 'cal':
-            runpath_only = 'run'
-        elif 'cal_' in calpath_only:
-            runpath_only = calpath_only.replace('cal_', 'run_')
-        elif '_cal' in calpath_only:
-            runpath_only = calpath_only.replace('_cal', '_run')
-        else:
-            runpath_only = '%s_run' % (calpath_only)
-
-        runpath = os.path.join(calparent, runpath_only)
-
-        if not os.path.isdir(runpath):
-            os.makedirs(runpath)
-
-        # Make sure we have absolute paths for everything that is defined
-        self.config.galfile = os.path.abspath(self.config.galfile)
-        self.config.specfile = os.path.abspath(self.config.specfile)
-
-        outbase_cal = self.config.outbase
-
-        # Compute the string to go with the final iteration
-        iterstr = '%s_iter%d' % (outbase_cal, self.config.calib_niter)
-
-        # Compute the new outbase
-        if '_cal' in outbase_cal:
-            outbase_run = self.config.outbase.replace('_cal', '_run')
-        else:
-            outbase_run = '%s_run' % (outbase_cal)
-
-        self.config.outbase = outbase_run
-
-        self.config.parfile = os.path.abspath(os.path.join(self.config.outpath,
-                                                           '%s_pars.fit' % (iterstr)))
-
-        # This is the default, unless we want to recompute
-        self.config.bkgfile = os.path.abspath(os.path.join(calpath,
-                                                           '%s_bkg.fit' % (iterstr)))
-
-        # If we calibrated on the full survey, then we have the zredfile already
-        if self.config.nside == 0:
-            self.config.zredfile = os.path.abspath(os.path.join(calpath,
-                                                                '%s' % (iterstr),
-                                                                '%s_zreds_master_table.fit' % (iterstr)))
-        else:
-            new_zreds = True
-
-            galfile_base = os.path.basename(self.config.galfile)
-            zredfile = galfile_base.replace('_master', '_zreds_master')
-            self.config.zredfile = os.path.abspath(os.path.join(runpath,
-                                                                'zreds',
-                                                                zredfile))
-            if self.config.calib_make_full_bkg:
-                new_bkgfile = True
-                self.config.bkgfile = os.path.abspath(os.path.join(runpath, '%s_bkg.fit' % (outbase_run)))
-
-
-        self.config.zlambdafile = os.path.abspath(os.path.join(calpath, '%s_zlambda.fit' % (iterstr)))
-        self.config.wcenfile = os.path.abspath(os.path.join(calpath, '%s_wcen.fit' % (iterstr)))
-        self.config.bkgfile_color = os.path.abspath(self.config.bkgfile_color)
-        self.config.catfile = None
-        self.config.maskgalfile = os.path.abspath(self.config.maskgalfile)
-        self.config.redgalfile = os.path.abspath(self.config.redgalfile)
-        self.config.redgalmodelfile = os.path.abspath(self.config.redgalmodelfile)
-        self.config.seedfile = None
-        self.config.zmemfile = None
-
-        # and reset the running values
-        self.config.nside = 0
-        self.config.hpix = []
-        self.config.border = 0.0
-
-        # Erase any configured area which is only used to override the
-        # galfile area in the case when we are calibrating a subregion
-        # without a depthmap
-        self.config.area = None
-
-        self.config.output_yaml(os.path.join(runpath, 'run_default.yml'))
-
-        return (new_bkgfile, new_zreds)
-
-class RedmapperCalibrationIteration(object):
-    """
-    Class to perform a single iteration of the redmapper calibration.
-    """
-
-    def __init__(self, config, rng=None):
-        """
-        Instantiate a RedmapperCalibrationIteration
-
-        Parameters
-        ----------
-        config: `redmapper.Configuration`
-           Configuration object
-        """
-        self.config = config
-
-        if rng is None:
-            rng = np.random.RandomState(self.config.randomseed)
-        self.rng = rng
-
-    def run(self, iteration):
-        """
-        Run a single iteration of the redmapper calibration.
-
-        Files will include the name "iter%{iteration}".  Extra files are
-        created in iteration 1 to start the calibration of the centering model.
-        (Note that "iteration 0" is the color-based run that happens before the
-        first iteration).
-
-        Parameters
-        ----------
-        iteration: `int`
-           Iteration number.
-        """
-
-        # Generate the name of the parfile
-        self.config.d.outbase = '%s_iter%d' % (self.config.outbase, iteration)
-
-        self.config.parfile = self.config.redmapper_filename('pars')
-
-        # Run the red sequence calibration
-        if os.path.isfile(self.config.parfile):
-            self.config.logger.info("%s already there.  Skipping..." % (self.config.parfile))
-        else:
-            self.config.logger.info("Running red sequence calibration...")
-            redsequencecal = RedSequenceCalibrator(self.config, self.config.zmemfile, rng=self.rng)
-            redsequencecal.run()
-
-        # Make the "sz" file (I think maybe I can skip this)
-
-        # Compute zreds based on the type of galaxy file
-        if self.config.galfile_pixelized:
-            self.config.zredfile = self.config.redmapper_filename('zreds_master_table', paths=(self.config.d.outbase,))
-        else:
-            self.config.zredfile = self.config.redmapper_filename('zreds')
-
-        if os.path.isfile(self.config.zredfile):
-            self.config.logger.info("%s already there.  Skipping..." % (self.config.zredfile))
-        else:
-            self.config.logger.info("Computing zreds for all galaxies in the training region...")
-            self.config.d.hpix = self.config.hpix
-            self.config.d.nside = self.config.nside
-
-            if self.config.galfile_pixelized:
-                zredRunpix = ZredRunPixels(self.config)
-                zredRunpix.run()
-            else:
-                zredRuncat = ZredRunCatalog(self.config)
-                zredRuncat.run(self.config.galfile, self.config.zredfile)
-
-        # Compute the chisq background
-        self.config.bkgfile = self.config.redmapper_filename('bkg')
-
-        # There are two extensions here, so we need to be careful
-        calc_bkg = False
-        calc_zred_bkg = False
-        if not os.path.isfile(self.config.bkgfile):
-            calc_bkg = True
-            calc_zred_bkg = True
-        else:
-            with fitsio.FITS(self.config.bkgfile) as fits:
-                if 'CHISQBKG' not in [ext.get_extname() for ext in fits[1: ]]:
-                    calc_bkg = True
-                else:
-                    self.config.logger.info("Found CHISQBKG in %s.  Skipping..." % (self.config.bkgfile))
-                if 'ZREDBKG' not in [ext.get_extname() for ext in fits[1: ]]:
-                    calc_zred_bkg = True
-                else:
-                    self.config.logger.info("Found ZREDBKG in %s.  Skipping..." % (self.config.bkgfile))
-
-        if calc_bkg:
-            self.config.logger.info("Generating chisq background...")
-            bkg_gen = BackgroundGenerator(self.config)
-            bkg_gen.run()
-
-        if calc_zred_bkg:
-            self.config.logger.info("Generating zred background...")
-            zbkg_gen = ZredBackgroundGenerator(self.config)
-            zbkg_gen.run()
-
-        # Set the centering function
-        centerclass = copy.deepcopy(self.config.centerclass)
+            logger.info("Preparing members for next calibration...")
+            prep_members(config, 'z_init', rng=rng)
+
+        # Reset outbase for next iteration
+        config.outbase = outbase_orig
 
         if iteration == 1:
-            self.config.centerclass = self.config.firstpass_centerclass
-        else:
-            self.config.centerclass = 'CenteringWcenZred'
-
-        # Generate the zreds for the specseeds
-        # This is the iteration seedfile
-        iter_seedfile = self.config.redmapper_filename('specseeds')
-
-        if os.path.isfile(iter_seedfile):
-            self.config.logger.info('%s already there.  Skipping...' % (iter_seedfile))
-        else:
-            self.config.logger.info("Generating iteration seedfile...")
-            seedzredfile = self.config.redmapper_filename('specseeds_zreds')
-            zredRuncat = ZredRunCatalog(self.config)
-            zredRuncat.run(self.config.seedfile, seedzredfile)
-
-            # Now combine seeds with zreds
-            seeds = Catalog.from_fits_file(self.config.seedfile, ext=1)
-            zreds = Catalog.from_fits_file(seedzredfile, ext=1)
-
-            seeds.zred = zreds.zred
-            seeds.zred_e = zreds.zred_e
-            seeds.zred_chisq = zreds.chisq
-
-            seeds.to_fits_file(iter_seedfile)
-
-
-        # Run the cluster finder in specmode (And consolidate likelihoods)
-        finalfile = self.config.redmapper_filename('final')
-
-        if os.path.isfile(finalfile):
-            self.config.logger.info('%s already there.  Skipping...' % (finalfile))
-        else:
-            self.config.logger.info("Running redmapper in specmode with seeds...")
-            self.config.zlambdafile = None
-
-            redmapper_run = RedmapperRun(self.config)
-            catfile, likefile = redmapper_run.run(specmode=True, keepz=True, consolidate_like=True, seedfile=iter_seedfile, cleaninput=True)
-            # check that catfile is the same as finalfile?
-            if catfile != finalfile:
-                raise RuntimeError("The output catfile %s should be the same as finalfile %s" % (catfile, finalfile))
-
-        # If it's the first iteration, calibrate random and satellite w functions
-        if iteration == 1:
-            sublikefile = self.config.redmapper_filename('sub_like')
-
-            if os.path.isfile(sublikefile):
-                self.config.logger.info('%s already there.  Skipping...' % (sublikefile))
+            # If this is the first iteration, generate a new seedfile
+            new_seedfile = config.redmapper_filename('cut_specseeds')
+            if os.path.isfile(new_seedfile):
+                logger.info("%s already there.  Skipping..." % (new_seedfile))
             else:
-                # Generate a subset of the likelihood file...
-                # Read these as GalaxyCatalogs to do matching
-                lcat = GalaxyCatalog.from_fits_file(self.config.redmapper_filename('like'))
-                pcat = GalaxyCatalog.from_fits_file(finalfile)
+                logger.info("Generating cut specseeds...")
+                seeds = GalaxyCatalog.from_fits_file(config.seedfile)
+                cat = GalaxyCatalog.from_fits_file(config.catfile)
+                use, = np.where(cat.Lambda > config.percolation_minlambda)
+                i0, i1, dd = seeds.match_many(cat.ra[use], cat.dec[use], 0.5/3600., maxmatch=1)
+                seeds.to_fits_file(new_seedfile, indices=i1)
+            config.seedfile = new_seedfile
 
-                use, = np.where(pcat.Lambda > self.config.percolation_minlambda)
+    # 7. Prep for final iteration
+    config.seedfile = config.redmapper_filename('specseeds')
 
-                # matching...
-                i0, i1, dd = lcat.match_many(pcat.ra[use], pcat.dec[use], 0.5/3600., maxmatch=1)
+    if os.path.isfile(config.seedfile):
+        logger.info("%s already there.  Skipping..." % (config.seedfile))
+    else:
+        logger.info("Generating spectroscopic seeds (full spec)...")
+        select_spec_seeds_wrapper(config, usetrain=False)
 
-                sublcat = lcat[i1]
+    _run_final_calibration_iteration(config, config.calib_niter)
 
-                sublcat.to_fits_file(sublikefile)
+    # Reset outbase after final iteration (it was changed to *_iterNb inside)
+    config.outbase = outbase_orig
 
-            outbase = self.config.d.outbase
+    # 8. Output a configuration file
+    new_bkgfile, new_zreds = _output_calibration_config(config)
 
-            self.config.d.outbase = '%s_rand' % (outbase)
-            catfile_for_rand_calib = self.config.redmapper_filename('final')
-            if os.path.isfile(catfile_for_rand_calib):
-                self.config.logger.info('%s already there.  Skipping...' % (catfile_for_rand_calib))
-            else:
-                self.config.logger.info("Running percolation for random centers...")
-                self.config.catfile = sublikefile
-                self.config.centerclass = 'CenteringRandom'
-
-                redmapper_run = RedmapperRun(self.config)
-                redmapper_run.run(check=True, percolation_only=True, keepz=True, cleaninput=True)
-
-            self.config.d.outbase = '%s_randsat' % (outbase)
-            catfile_for_randsat_calib = self.config.redmapper_filename('final')
-            if os.path.isfile(catfile_for_randsat_calib):
-                self.config.logger.info('%s already there.  Skipping...' % (catfile_for_randsat_calib))
-            else:
-                self.config.logger.info("Running percolation for random satellite centers...")
-                self.config.catfile = sublikefile
-                self.config.centerclass = 'CenteringRandomSatellite'
-
-                redmapper_run = RedmapperRun(self.config)
-                redmapper_run.run(check=True, percolation_only=True, keepz=True, cleaninput=True)
-
-            # Reset outbase
-            self.config.d.outbase = outbase
+    # 9. Generate a full background if needed
+    if new_bkgfile:
+        logger.info("Running full background...")
+        config.hpix = []
+        config.nside = 0
+        config.area = config.galfile_area
+        generate_background(config, deepmode=True)
+        logger.info("Remember to run zreds and zred background before running the full cluster finder.")
+    else:
+        if new_zreds:
+            logger.info("Remember to run zreds before running the full cluster finder.  No need to recompute the background.")
         else:
-            catfile_for_rand_calib = None
-            catfile_for_randsat_calib = None
+            logger.info("Calibration done on full footprint, so background and zreds are already available.")
 
-        # Calibrate wcen
-        self.config.centerclass = centerclass
-        self.config.catfile = finalfile
-        self.config.wcenfile = self.config.redmapper_filename('wcen')
-
-        if os.path.isfile(self.config.wcenfile):
-            self.config.logger.info('%s already there.  Skipping...' % (self.config.wcenfile))
-        else:
-            self.config.logger.info("Calibrating Wcen")
-            wc = WcenCalibrator(self.config, iteration,
-                                randcatfile=catfile_for_rand_calib,
-                                randsatcatfile=catfile_for_randsat_calib,
-                                rng=self.rng)
-            wc.run()
-
-        self.config.set_wcen_vals()
-
-        # Calibrate zlambda correction
-        self.config.zlambdafile = self.config.redmapper_filename('zlambda')
-
-        if os.path.isfile(self.config.zlambdafile):
-            self.config.logger.info('%s already there.  Skipping...' % (self.config.zlambdafile))
-        else:
-            self.config.logger.info("Calibrating zlambda corrections...")
-            zlambdacal = ZLambdaCalibrator(self.config, corrslope=False)
-            zlambdacal.run()
-
-        # Make pretty plots showing performance
-        spec_plot = SpecPlot(self.config)
-        if os.path.isfile(spec_plot.filename):
-            self.config.logger.info("%s already there.  Skipping..." % (spec_plot.filename))
-        else:
-            self.config.logger.info("Correcting redshifts and making spec plot...")
-            # We need to do a final run to apply the corrections, but this
-            # seems inefficient...
-
-            # Load in the catalog, apply the corrections, and make the plot.
-            self.config.logger.info(self.config.catfile)
-            cat = Catalog.from_fits_file(self.config.catfile)
-
-            # Compute offsets for all marginal clusters to check for errors
-            use, = np.where(cat.Lambda > self.config.calib_minlambda)
-            cat = cat[use]
-
-            zlambda_corr = ZlambdaCorrectionPar(parfile=self.config.zlambdafile,
-                                                zlambda_pivot=self.config.zlambda_pivot)
-            zlold = cat.z_lambda
-            zleold = cat.z_lambda_e
-
-            for cluster in cat:
-                zlam, zlam_e = zlambda_corr.apply_correction(cluster.Lambda, cluster.z_lambda, cluster.z_lambda_e)
-                cluster.z_lambda = zlam
-                cluster.z_lambda_e = zlam_e
-
-            # Check for negative values... this is a minimal check
-            test, = np.where(cluster.z_lambda < 0.0)
-            if (test.size > 0):
-                raise RuntimeError("z_lambda correction calibration totally failed, and is yielding negative redshifts.  "
-                                   "Likely there is a configuration error, see config.calib_zlambda_minlambda and "
-                                   "config.calib_zlambda_nodesize.")
-
-            # Only plot those above the specified threshold
-            use, = np.where(cat.Lambda > self.config.calib_zlambda_minlambda)
-
-            spec_plot.plot_values(cat.z_spec_init[use], cat.z_lambda[use], cat.z_lambda_e[use], title=self.config.d.outbase)
-
-
-class RedmapperCalibrationIterationFinal(object):
+def _run_calibration_iteration(config, iteration, rng):
     """
-    Class to run the final iteration of the red-sequence calibration.
-
-    This run does not start with the spectroscopic redshifts in the run to test
-    the performance using zred as the cluster seed redshift.
+    Internal helper to run a single iteration of the redmapper calibration.
     """
+    # Generate the name of the parfile
+    outbase_orig = config.outbase
+    config.outbase = '%s_iter%d' % (outbase_orig, iteration)
+    config.parfile = config.redmapper_filename('pars')
 
-    def __init__(self, config):
-        """
-        Instantiate a RedmapperCalibrationIterationFinal
+    # 1. Run the red sequence calibration
+    if os.path.isfile(config.parfile):
+        logger.info("%s already there.  Skipping..." % (config.parfile))
+    else:
+        logger.info("Running red sequence calibration...")
+        calibrate_red_sequence(config, config.zmemfile, rng=rng)
 
-        Parameters
-        ----------
-        config: `redmapper.Configuration`
-           Configuration object
-        """
-        self.config = config
+    # 2. Compute zreds
+    if config.galfile_pixelized:
+        config.zredfile = config.redmapper_filename('zreds_master_table', paths=(config.outbase,))
+    else:
+        config.zredfile = config.redmapper_filename('zreds')
 
-    def run(self, iteration):
-        """
-        Run the final iteration of the red-sequence calibration.
-
-        Files will be output with the iteration name "iter%{iteration}b".
-
-        Parameters
-        ----------
-        iteration: `int`
-           Iteration number.  Used for naming files.
-        """
-
-        # Generate the names
-        self.config.d.outbase = '%s_iter%db' % (self.config.outbase, iteration)
-
-        # Generate zreds for the specseeds
-        iter_seedfile = self.config.redmapper_filename('specseeds')
-
-        if os.path.isfile(iter_seedfile):
-            self.config.logger.info('%s already there.  Skipping...'  % (iter_seedfile))
+    if os.path.isfile(config.zredfile):
+        logger.info("%s already there.  Skipping..." % (config.zredfile))
+    else:
+        logger.info("Computing zreds for all galaxies in the training region...")
+        if config.galfile_pixelized:
+            run_zred_pixels(config)
         else:
-            self.config.logger.info("Creating final iteration seeds...")
-            seedzredfile = self.config.redmapper_filename('specseeds_zreds')
-            zredRuncat = ZredRunCatalog(self.config)
-            zredRuncat.run(self.config.seedfile, seedzredfile)
+            run_zred_catalog(config, config.galfile, config.zredfile)
 
-            # Now combine seeds with zreds
-            seeds = Catalog.from_fits_file(self.config.seedfile, ext=1)
-            zreds = Catalog.from_fits_file(seedzredfile, ext=1)
+    # 3. Compute the chisq background
+    config.bkgfile = config.redmapper_filename('bkg')
+    calc_bkg = False
+    calc_zred_bkg = False
+    if not os.path.isfile(config.bkgfile):
+        calc_bkg = True
+        calc_zred_bkg = True
+    else:
+        with fitsio.FITS(config.bkgfile) as fits:
+            extnames = [ext.get_extname() for ext in fits[1: ]]
+            if 'CHISQBKG' not in extnames:
+                calc_bkg = True
+            else:
+                logger.info("Found CHISQBKG in %s.  Skipping..." % (config.bkgfile))
+            if 'ZREDBKG' not in extnames:
+                calc_zred_bkg = True
+            else:
+                logger.info("Found ZREDBKG in %s.  Skipping..." % (config.bkgfile))
 
-            seeds.zred = zreds.zred
-            seeds.zred_e = zreds.zred_e
-            seeds.zred_chisq = zreds.chisq
+    if calc_bkg:
+        logger.info("Generating chisq background...")
+        generate_background(config)
+    if calc_zred_bkg:
+        logger.info("Generating zred background...")
+        generate_zred_background(config)
 
-            seeds.to_fits_file(iter_seedfile)
+    # 4. Set the centering function
+    centerclass_orig = config.centerclass
+    if iteration == 1:
+        config.centerclass = config.firstpass_centerclass
+    else:
+        config.centerclass = 'CenteringWcenZred'
 
-        # Do the full run with these seeds
-        # and the previously calibrated zlambda correction (which is what's used)
+    # 5. Generate the zreds for the specseeds
+    iter_seedfile = config.redmapper_filename('specseeds')
+    if os.path.isfile(iter_seedfile):
+        logger.info('%s already there.  Skipping...' % (iter_seedfile))
+    else:
+        logger.info("Generating iteration seedfile...")
+        seedzredfile = config.redmapper_filename('specseeds_zreds')
+        run_zred_catalog(config, config.seedfile, seedzredfile)
+        seeds = Catalog.from_fits_file(config.seedfile, ext=1)
+        zreds = Catalog.from_fits_file(seedzredfile, ext=1)
+        seeds.zred = zreds.zred
+        seeds.zred_e = zreds.zred_e
+        seeds.zred_chisq = zreds.chisq
+        seeds.to_fits_file(iter_seedfile)
 
-        finalfile = self.config.redmapper_filename('final')
+    # 6. Run the cluster finder in specmode
+    finalfile = config.redmapper_filename('final')
+    if os.path.isfile(finalfile):
+        logger.info('%s already there.  Skipping...' % (finalfile))
+    else:
+        logger.info("Running redmapper in specmode with seeds...")
+        config.zlambdafile = None
+        catfile, likefile = redmapper_run(config, specmode=True, keepz=True, 
+                                          consolidate_like=True, seedfile=iter_seedfile, cleaninput=True)
+        if catfile != finalfile:
+            raise RuntimeError("The output catfile %s should be the same as finalfile %s" % (catfile, finalfile))
 
-        if os.path.isfile(finalfile):
-            self.config.logger.info('%s already there.  Skipping...' % (finalfile))
+    # 7. Calibrate random and satellite w functions if first iteration
+    if iteration == 1:
+        sublikefile = config.redmapper_filename('sub_like')
+        if not os.path.isfile(sublikefile):
+            lcat = GalaxyCatalog.from_fits_file(config.redmapper_filename('like'))
+            pcat = GalaxyCatalog.from_fits_file(finalfile)
+            use, = np.where(pcat.Lambda > config.percolation_minlambda)
+            i0, i1, dd = lcat.match_many(pcat.ra[use], pcat.dec[use], 0.5/3600., maxmatch=1)
+            sublcat = lcat[i1]
+            sublcat.to_fits_file(sublikefile)
+
+        outbase_iter = config.outbase
+        config.outbase = '%s_rand' % (outbase_iter)
+        catfile_for_rand_calib = config.redmapper_filename('final')
+        if os.path.isfile(catfile_for_rand_calib):
+            logger.info('%s already there.  Skipping...' % (catfile_for_rand_calib))
         else:
-            self.config.logger.info("Doing final iteration run")
-            redmapper_run = RedmapperRun(self.config)
-            catfile = redmapper_run.run(seedfile=iter_seedfile, cleaninput=True)
-            # check that catfile is the same as finalfile?
-            if catfile != finalfile:
-                raise RuntimeError("The output catfile %s should be the same as finalfile %s" % (catfile, finalfile))
+            logger.info("Running percolation for random centers...")
+            config.catfile = sublikefile
+            config.centerclass = 'CenteringRandom'
+            redmapper_run(config, check=True, percolation_only=True, keepz=True, cleaninput=True)
 
-        self.config.catfile = finalfile
-
-        # And pretty plots
-        spec_plot = SpecPlot(self.config)
-        if os.path.isfile(spec_plot.filename):
-            self.config.logger.info("%s already there.  Skipping..." % (spec_plot.filename))
+        config.outbase = '%s_randsat' % (outbase_iter)
+        catfile_for_randsat_calib = config.redmapper_filename('final')
+        if os.path.isfile(catfile_for_randsat_calib):
+            logger.info('%s already there.  Skipping...' % (catfile_for_randsat_calib))
         else:
-            self.config.logger.info("Making final iteration spec plot...")
-            # We do not need to do the corrections for the final run (which has them, I hope)
+            logger.info("Running percolation for random satellite centers...")
+            config.catfile = sublikefile
+            config.centerclass = 'CenteringRandomSatellite'
+            redmapper_run(config, check=True, percolation_only=True, keepz=True, cleaninput=True)
+        
+        config.outbase = outbase_iter
+    else:
+        catfile_for_rand_calib = None
+        catfile_for_randsat_calib = None
 
-            cat = Catalog.from_fits_file(self.config.catfile)
-            use, = np.where(cat.Lambda > self.config.calib_zlambda_minlambda)
-            cat = cat[use]
+    # 8. Calibrate wcen
+    config.centerclass = centerclass_orig
+    config.catfile = finalfile
+    config.wcenfile = config.redmapper_filename('wcen')
+    if os.path.isfile(config.wcenfile):
+        logger.info('%s already there.  Skipping...' % (config.wcenfile))
+    else:
+        logger.info("Calibrating Wcen")
+        calibrate_wcen(config, iteration,
+                       randcatfile=catfile_for_rand_calib,
+                       randsatcatfile=catfile_for_randsat_calib,
+                       rng=rng)
 
-            spec_plot.plot_values(cat.z_spec_init, cat.z_lambda, cat.z_lambda_e, title=self.config.d.outbase)
+    # We need a way to set wcen vals in config dictionary
+    from ..configuration import get_wcen_vals
+    wcen_vals = get_wcen_vals(config.wcenfile)
+    for key, value in wcen_vals.items():
+        config[key] = value
+
+    # 9. Calibrate zlambda correction
+    config.zlambdafile = config.redmapper_filename('zlambda')
+    if os.path.isfile(config.zlambdafile):
+        logger.info('%s already there.  Skipping...' % (config.zlambdafile))
+    else:
+        logger.info("Calibrating zlambda corrections...")
+        calibrate_zlambda(config, corrslope=False)
+
+    # 10. Make pretty plots
+    plot_filename = config.redmapper_filename('zspec', paths=(config.plotpath,), filetype='png')
+    if os.path.isfile(plot_filename):
+        logger.info("%s already there.  Skipping..." % (plot_filename))
+    else:
+        logger.info("Correcting redshifts and making spec plot...")
+        cat = Catalog.from_fits_file(config.catfile)
+        use, = np.where(cat.Lambda > config.calib_minlambda)
+        cat = cat[use]
+        zlambda_corr_data = read_zlambda_correction(parfile=config.zlambdafile,
+                                                    zlambda_pivot=config.zlambda_pivot)
+        for cluster in cat:
+            zlam, zlam_e = apply_zlambda_correction(zlambda_corr_data, cluster.Lambda, 
+                                                    cluster.z_lambda, cluster.z_lambda_e)
+            cluster.z_lambda = zlam
+            cluster.z_lambda_e = zlam_e
+
+        test, = np.where(cat.z_lambda < 0.0)
+        if test.size > 0:
+            raise RuntimeError("z_lambda correction calibration totally failed yielding negative redshifts.")
+        
+        use, = np.where(cat.Lambda > config.calib_zlambda_minlambda)
+        plot_spec_comparison(config, cat.z_spec_init[use], cat.z_lambda[use], cat.z_lambda_e[use], 
+                             title=config.outbase)
+
+def _run_final_calibration_iteration(config, iteration):
+    """
+    Internal helper to run the final iteration of the red-sequence calibration.
+    """
+    outbase_orig = config.outbase
+    config.outbase = '%s_iter%db' % (outbase_orig, iteration)
+
+    iter_seedfile = config.redmapper_filename('specseeds')
+    if os.path.isfile(iter_seedfile):
+        logger.info('%s already there.  Skipping...'  % (iter_seedfile))
+    else:
+        logger.info("Creating final iteration seeds...")
+        seedzredfile = config.redmapper_filename('specseeds_zreds')
+        run_zred_catalog(config, config.seedfile, seedzredfile)
+        seeds = Catalog.from_fits_file(config.seedfile, ext=1)
+        zreds = Catalog.from_fits_file(seedzredfile, ext=1)
+        seeds.zred = zreds.zred
+        seeds.zred_e = zreds.zred_e
+        seeds.zred_chisq = zreds.chisq
+        seeds.to_fits_file(iter_seedfile)
+
+    finalfile = config.redmapper_filename('final')
+    if os.path.isfile(finalfile):
+        logger.info('%s already there.  Skipping...' % (finalfile))
+    else:
+        logger.info("Doing final iteration run")
+        catfile = redmapper_run(config, seedfile=iter_seedfile, cleaninput=True)
+        if catfile != finalfile:
+            raise RuntimeError("The output catfile %s should be the same as finalfile %s" % (catfile, finalfile))
+
+    config.catfile = finalfile
+    plot_filename = config.redmapper_filename('zspec', paths=(config.plotpath,), filetype='png')
+    if os.path.isfile(plot_filename):
+        logger.info("%s already there.  Skipping..." % (plot_filename))
+    else:
+        logger.info("Making final iteration spec plot...")
+        cat = Catalog.from_fits_file(config.catfile)
+        use, = np.where(cat.Lambda > config.calib_zlambda_minlambda)
+        cat = cat[use]
+        plot_spec_comparison(config, cat.z_spec_init, cat.z_lambda, cat.z_lambda_e, title=config.outbase)
+
+def _output_calibration_config(config):
+    """
+    Internal helper to output a configuration yaml file.
+    """
+    new_zreds = False
+    new_bkgfile = False
+
+    calpath = os.path.abspath(config.outpath)
+    calparent = os.path.normpath(os.path.join(calpath, os.pardir))
+    calpath_only = os.path.basename(os.path.normpath(calpath))
+
+    if calpath_only == 'cal':
+        runpath_only = 'run'
+    elif 'cal_' in calpath_only:
+        runpath_only = calpath_only.replace('cal_', 'run_')
+    elif '_cal' in calpath_only:
+        runpath_only = calpath_only.replace('_cal', '_run')
+    else:
+        runpath_only = '%s_run' % (calpath_only)
+
+    runpath = os.path.join(calparent, runpath_only)
+    if not os.path.isdir(runpath):
+        os.makedirs(runpath)
+
+    config.galfile = os.path.abspath(config.galfile)
+    config.specfile = os.path.abspath(config.specfile)
+
+    outbase_cal = config.outbase
+    iterstr = '%s_iter%d' % (outbase_cal, config.calib_niter)
+
+    if '_cal' in outbase_cal:
+        outbase_run = outbase_cal.replace('_cal', '_run')
+    else:
+        outbase_run = '%s_run' % (outbase_cal)
+
+    config.outbase = outbase_run
+    config.parfile = os.path.abspath(os.path.join(config.outpath, '%s_pars.fit' % (iterstr)))
+    config.bkgfile = os.path.abspath(os.path.join(calpath, '%s_bkg.fit' % (iterstr)))
+
+    if config.nside == 0:
+        config.zredfile = os.path.abspath(os.path.join(calpath, '%s' % (iterstr), 
+                                                        '%s_zreds_master_table.fit' % (iterstr)))
+    else:
+        new_zreds = True
+        galfile_base = os.path.basename(config.galfile)
+        zredfile = galfile_base.replace('_master', '_zreds_master')
+        config.zredfile = os.path.abspath(os.path.join(runpath, 'zreds', zredfile))
+        if config.calib_make_full_bkg:
+            new_bkgfile = True
+            config.bkgfile = os.path.abspath(os.path.join(runpath, '%s_bkg.fit' % (outbase_run)))
+
+    config.zlambdafile = os.path.abspath(os.path.join(calpath, '%s_zlambda.fit' % (iterstr)))
+    config.wcenfile = os.path.abspath(os.path.join(calpath, '%s_wcen.fit' % (iterstr)))
+    config.bkgfile_color = os.path.abspath(config.bkgfile_color)
+    config.catfile = None
+    config.maskgalfile = os.path.abspath(config.maskgalfile)
+    config.redgalfile = os.path.abspath(config.redgalfile)
+    config.redgalmodelfile = os.path.abspath(config.redgalmodelfile)
+    config.seedfile = None
+    config.zmemfile = None
+    config.nside = 0
+    config.hpix = []
+    config.border = 0.0
+    config.area = None
+
+    config.output_yaml(os.path.join(runpath, 'run_default.yml'))
+
+    return (new_bkgfile, new_zreds)
 

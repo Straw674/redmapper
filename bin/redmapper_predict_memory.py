@@ -19,7 +19,4 @@ parser.add_argument('-b', '--border_factor', action='store', type=float, require
 
 args = parser.parse_args()
 
-mem_predictor = redmapper.pipeline.MemPredict(args.configfile)
-
-mem_predictor.predict_memory(include_zreds=not args.no_zred, border_factor=args.border_factor)
-
+redmapper.pipeline.predict_memory(args.configfile, include_zreds=not args.no_zred, border_factor=args.border_factor)

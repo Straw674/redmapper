@@ -23,7 +23,7 @@ class ReadConfigTestCase(unittest.TestCase):
         self.assertEqual(config.parfile,'./data_for_tests/test_dr8_pars.fit')
         self.assertEqual(config.bkgfile,'./data_for_tests/test_bkg.fit')
         testing.assert_almost_equal(config.zrange, [0.05, 0.60])
-        self.assertEqual(config.d.outbase,"dr8_testing")
+        self.assertEqual(config.outbase,"dr8_testing")
         self.assertEqual(config.chisq_max,20.0)
         self.assertEqual(config.lval_reference,0.2)
         self.assertEqual(config.mask_mode,3)

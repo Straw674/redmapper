@@ -21,7 +21,4 @@ if __name__ == '__main__':
 
     args = parser.parse_args()
 
-    runRuncatPixelTask = redmapper.pipeline.RuncatPixelTask(args.configfile, args.pixel, args.nside, path=args.path)
-    runRuncatPixelTask.run()
-
-
+    redmapper.pipeline.run_runcat_pixel_task(args.configfile, args.pixel, args.nside, path=args.path)

@@ -1,281 +1,259 @@
-"""Classes to describe a redmapper depth map.
-
+"""Functions to describe a redmapper depth map.
 """
 import fitsio
 import hpgeom as hpg
 import numpy as np
-import esutil
-import scipy.optimize
 import healsparse
 
-from .utilities import astro_to_sphere, get_healsparse_subpix_indices
-from .catalog import Catalog, Entry
+from .utilities import get_healsparse_subpix_indices
+from .logger import logger
 
-class DepthMap(object):
+def read_depth_map(config, depthfile=None):
     """
-    A class to use a healpix-based redmapper depth map.
-
-    FIXME: Put a description of the format here.
+    Read a healpix-based redmapper depth map.
 
     Parameters
     ----------
-    config: `redmapper.Configuration`
-       Configuration object, with config.depthfile set
+    config: `redmapper.Config`
+       Configuration object, with config['depthfile'] set
     depthfile: `str`, optional
-       Name of depthfile to use instead of config.depthfile
+       Name of depthfile to use instead of config['depthfile']
+
+    Returns
+    -------
+    depth_data: `dict`
+        Dictionary containing depth map data and metadata
     """
-    def __init__(self, config, depthfile=None):
-        """
-        Instantiate a healpix-based redmapper depth map.
+    if depthfile is None:
+        depthfile = config['depthfile']
+    else:
+        depthfile = depthfile
 
-        Parameters
-        ----------
-        config: `redmapper.Configuration`
-           Configuration object, with config.depthfile set
-        depthfile: `str`, optional
-           Name of depthfile to use instead of config.depthfile
-        """
-        # record for posterity
-        if depthfile is None:
-            self.depthfile = config.depthfile
-        else:
-            self.depthfile = depthfile
+    hdr = fitsio.read_header(depthfile, ext=1)
+    if 'PIXTYPE' not in hdr or hdr['PIXTYPE'] != 'HEALSPARSE':
+        raise RuntimeError("Need to specify depthfile in healsparse format.  See redmapper_convert_depthfile_to_healsparse.py")
 
-        hdr = fitsio.read_header(self.depthfile, ext=1)
-        if 'PIXTYPE' not in hdr or hdr['PIXTYPE'] != 'HEALSPARSE':
-            raise RuntimeError("Need to specify depthfile in healsparse format.  See redmapper_convert_depthfile_to_healsparse.py")
+    cov_hdr = fitsio.read_header(depthfile, ext='COV')
+    nside_coverage = cov_hdr['NSIDE']
 
-        cov_hdr = fitsio.read_header(self.depthfile, ext='COV')
-        nside_coverage = cov_hdr['NSIDE']
+    if len(config['hpix']) > 0:
+        covpixels = get_healsparse_subpix_indices(config['nside'], config['hpix'],
+                                                  config['border'], nside_coverage)
+    else:
+        covpixels = None
 
-        self.nsig = cov_hdr['NSIG']
-        self.zp = cov_hdr['ZP']
-        self.nband = cov_hdr['NBAND']
-        self.w = cov_hdr['W']
-        self.eff = cov_hdr['EFF']
+    sparse_depthmap = healsparse.HealSparseMap.read(depthfile, pixels=covpixels)
 
-        if len(config.d.hpix) > 0:
-            covpixels = get_healsparse_subpix_indices(config.d.nside, config.d.hpix,
-                                                      config.border, nside_coverage)
-        else:
-            covpixels = None
+    depth_data = {
+        'depthfile': depthfile,
+        'nsig': cov_hdr['NSIG'],
+        'zp': cov_hdr['ZP'],
+        'nband': cov_hdr['NBAND'],
+        'w': cov_hdr['W'],
+        'eff': cov_hdr['EFF'],
+        'sparse_depthmap': sparse_depthmap,
+        'galfile_nside': config['galfile_nside'],
+        'nside': sparse_depthmap.nside_sparse,
+        'config_area': config['area'],
+        'subpix_nside': config['nside'],
+        'subpix_hpix': config['hpix'],
+        'subpix_border': config['border']
+    }
 
-        self.sparse_depthmap = healsparse.HealSparseMap.read(self.depthfile, pixels=covpixels)
+    return depth_data
 
-        self.galfile_nside = config.galfile_nside
-        self.config_logger = config.logger
-        self.nside = self.sparse_depthmap.nside_sparse
-        self.config_area = config.area
+def get_depth_values(depth_data, ras, decs):
+    """
+    Get the depth values for a set of positions.
 
-        # Record the coverage of the subregion that we read
-        self.subpix_nside = config.d.nside
-        self.subpix_hpix = config.d.hpix
-        self.subpix_border = config.border
+    Parameters
+    ----------
+    depth_data: `dict`
+       Depth data dictionary from read_depth_map
+    ras: `np.array`
+       Float array of right ascensions
+    decs: `np.array`
+       Float array of declinations
 
-    def get_depth_values(self, ras, decs):
-        """
-        Get the depth values for a set of positions.
+    Returns
+    -------
+    limmag: `np.array`
+       Limiting magnitude values
+    exptime: `np.array`
+       Effective exposure times
+    m50: `np.array`
+       50% completeness depth values.  Should be same as limmag for now.
+    """
 
-        Parameters
-        ----------
-        ras: `np.array`
-           Float array of right ascensions
-        decs: `np.array`
-           Float array of declinations
+    if ras.size != decs.size:
+        raise ValueError("ra, dec must be the same length")
 
-        Returns
-        -------
-        limmag: `np.array`
-           Limiting magnitude values
-        exptime: `np.array`
-           Effective exposure times
-        m50: `np.array`
-           50% completeness depth values.  Should be same as limmag for now.
-        """
+    values = depth_data['sparse_depthmap'].get_values_pos(ras, np.clip(decs, -90.0, 90.0), lonlat=True)
 
-        if ras.size != decs.size:
-            raise ValueError("ra, dec must be the same length")
+    bad, = np.where(np.abs(decs) > 90.0)
+    values['limmag'][bad] = hpg.UNSEEN
+    values['exptime'][bad] = hpg.UNSEEN
+    values['m50'][bad] = hpg.UNSEEN
 
-        values = self.sparse_depthmap.get_values_pos(ras, np.clip(decs, -90.0, 90.0), lonlat=True)
+    return (values['limmag'],
+            values['exptime'],
+            values['m50'])
 
-        bad, = np.where(np.abs(decs) > 90.0)
-        values['limmag'][bad] = hpg.UNSEEN
-        values['exptime'][bad] = hpg.UNSEEN
-        values['m50'][bad] = hpg.UNSEEN
+def get_fracgoods(depth_data, ras, decs):
+    """
+    Get the fraction of good coverage of each pixel
 
-        return (values['limmag'],
-                values['exptime'],
-                values['m50'])
+    Parameters
+    ----------
+    depth_data: `dict`
+       Depth data dictionary from read_depth_map
+    ras: `np.array`
+       Float array of right ascensions
+    decs: `np.array`
+       Float array of declinations
 
-    def get_fracgoods(self, ras, decs):
-        """
-        Get the fraction of good coverage of each pixel
+    Returns
+    -------
+    fracgoods: `np.array`
+       Float array of fracgoods
+    """
 
-        Parameters
-        ----------
-        ras: `np.array`
-           Float array of right ascensions
-        decs: `np.array`
-           Float array of declinations
+    if (ras.size != decs.size):
+        raise ValueError("ra, dec must be the same length")
 
-        Returns
-        -------
-        fracgoods: `np.array`
-           Float array of fracgoods
-        """
+    values = depth_data['sparse_depthmap'].get_values_pos(ras, np.clip(decs, -90.0, 90.0), lonlat=True)
 
-        if (ras.size != decs.size):
-            raise ValueError("ra, dec must be the same length")
+    bad, = np.where(np.abs(decs) > 90.0)
+    values['fracgood'][bad] = 0.0
 
-        values = self.sparse_depthmap.get_values_pos(ras, np.clip(decs, -90.0, 90.0), lonlat=True)
+    return values['fracgood']
 
-        bad, = np.where(np.abs(decs) > 90.0)
-        values['fracgood'][bad] = 0.0
+def compute_maskdepth(depth_data, maskgals, ra, dec, mpc_scale):
+    """
+    Calculate depth for maskgals structure.
 
-        return values['fracgood']
+    This will modify maskgals.limmag, maskgals.exptime, maskgals.zp,
+    maskgals.nsig.
 
-    def calc_maskdepth(self, maskgals, ra, dec, mpc_scale):
-        """
-        Calculate depth for maskgals structure.
+    Parameters
+    ----------
+    depth_data: `dict`
+       Depth data dictionary from read_depth_map
+    maskgals: `redmapper.Catalog` or `astropy.table.Table`
+       maskgals catalog
+    ra: `float`
+       Right ascension to center maskgals
+    dec: `float`
+       Declination ot center maskgals
+    mpc_scale: `float`
+       Scaling in Mpc / degree at cluster redshift
+    """
+    unseen = hpg.UNSEEN
 
-        This will modify maskgals.limmag, maskgals.exptime, maskgals.zp,
-        maskgals.nsig.
+    # compute ra and dec based on maskgals
+    ras = ra + (maskgals.x/mpc_scale)/np.cos(dec*np.pi/180.)
+    decs = dec + maskgals.y/mpc_scale
 
-        Parameters
-        ----------
-        masgkals: `redmapper.Catalog`
-           maskgals catalog
-        ra: `float`
-           Right ascension to center maskgals
-        dec: `float`
-           Declination ot center maskgals
-        mpc_scale: `float`
-           Scaling in Mpc / degree at cluster redshift
-        """
-        unseen = hpg.UNSEEN
-
-        # compute ra and dec based on maskgals
-        ras = ra + (maskgals.x/mpc_scale)/np.cos(dec*np.pi/180.)
-        decs = dec + maskgals.y/mpc_scale
-
-        maskgals.w[:] = self.w
+    maskgals.w[:] = depth_data['w']
+    # Note: in original code it was maskgals.eff = None, but maskgals might be a Table where eff is a column.
+    # However, Catalog wrapper handles it.
+    try:
         maskgals.eff = None
-        maskgals.limmag[:] = unseen
-        maskgals.zp[0] = self.zp
-        maskgals.nsig[0] = self.nsig
+    except:
+        pass
+    maskgals.limmag[:] = unseen
+    maskgals.zp[0] = depth_data['zp']
+    maskgals.nsig[0] = depth_data['nsig']
 
-        # Make sure the dec is within range, if we're going toward the pole (in sims)
-        gd, = np.where(np.abs(decs) < 90.0)
+    # Make sure the dec is within range, if we're going toward the pole (in sims)
+    gd, = np.where(np.abs(decs) < 90.0)
 
-        maskgals.limmag[gd], maskgals.exptime[gd], maskgals.m50[gd] = self.get_depth_values(ras[gd], decs[gd])
+    maskgals.limmag[gd], maskgals.exptime[gd], maskgals.m50[gd] = get_depth_values(depth_data, ras[gd], decs[gd])
 
-        bd = (maskgals.limmag < 0.0)
-        ok = ~bd
-        nok = ok.sum()
+    bd = (maskgals.limmag < 0.0)
+    ok = ~bd
+    nok = ok.sum()
 
-        if (bd.sum() > 0):
-            if (nok >= 3):
-                # fill them in
-                maskgals.limmag[bd] = np.median(maskgals.limmag[ok])
-                maskgals.exptime[bd] = np.median(maskgals.exptime[ok])
-                maskgals.m50[bd] = np.median(maskgals.m50[ok])
-            elif (nok > 0):
-                # fill with mean
-                maskgals.limmag[bd] = np.mean(maskgals.limmag[ok])
-                maskgals.exptime[bd] = np.mean(maskgals.exptime[ok])
-                maskgals.m50[bd] = np.mean(maskgals.m50[ok])
-            else:
-                # very bad (nok == 0)
-                # Set this to 1.0 so it'll get used but will give giant errors.
-                # And the cluster should be filtered
-                maskgals.limmag[:] = 1.0
-                maskgals.exptime[:] = 1000.0
-                maskgals.m50[:] = 0.0
-                self.config_logger.info("Warning: Bad cluster in bad region...")
-
-
-    def calc_areas(self, mags):
-        """
-        Calculate total area from the depth map as a function of magnitude.
-
-        Parameters
-        ----------
-        mags: `np.array`
-           Float array of magnitudes at which to compute area
-
-        Returns
-        -------
-        areas: `np.array`
-           Float array of total areas for each of the mags
-        """
-
-        pixsize = hpg.nside_to_pixel_area(self.nside, degrees=True)
-
-        if (self.w < 0.0):
-            # This is just constant area
-            areas = np.zeros(mags.size) + self.config_area
-            return areas
-
-        if len(self.subpix_hpix) > 0:
-            # for the subregion, we need the area covered in the main pixel
-            # I'm not sure what to do about border...but you shouldn't
-            # be running this with a subregion with a border
-            if self.subpix_border > 0.0:
-                raise RuntimeError("Cannot run calc_areas() with a subregion with a border")
-
-            bitShift = 2 * int(np.round(np.log(self.nside / self.subpix_nside) / np.log(2)))
-            nFinePerSub = 2**bitShift
-            ipnest = np.zeros(0, dtype=np.int64)
-            for hpix in self.subpix_hpix:
-                ipnest_temp = np.left_shift(hpg.ring_to_nest(self.subpix_nside, hpix), bitShift) + np.arange(nFinePerSub)
-                ipnest = np.append(ipnest, ipnest_temp)
+    if (bd.sum() > 0):
+        if (nok >= 3):
+            # fill them in
+            maskgals.limmag[bd] = np.median(maskgals.limmag[ok])
+            maskgals.exptime[bd] = np.median(maskgals.exptime[ok])
+            maskgals.m50[bd] = np.median(maskgals.m50[ok])
+        elif (nok > 0):
+            # fill with mean
+            maskgals.limmag[bd] = np.mean(maskgals.limmag[ok])
+            maskgals.exptime[bd] = np.mean(maskgals.exptime[ok])
+            maskgals.m50[bd] = np.mean(maskgals.m50[ok])
         else:
-            ipnest = self.sparse_depthmap.valid_pixels
+            # very bad (nok == 0)
+            # Set this to 1.0 so it'll get used but will give giant errors.
+            # And the cluster should be filtered
+            maskgals.limmag[:] = 1.0
+            maskgals.exptime[:] = 1000.0
+            maskgals.m50[:] = 0.0
+            logger.info("Warning: Bad cluster in bad region...")
 
-        areas = np.zeros(mags.size)
+def compute_areas(depth_data, mags):
+    """
+    Calculate total area from the depth map as a function of magnitude.
 
-        values = self.sparse_depthmap.get_values_pix(ipnest)
+    Parameters
+    ----------
+    depth_data: `dict`
+       Depth data dictionary from read_depth_map
+    mags: `np.array`
+       Float array of magnitudes at which to compute area
 
-        gd, = np.where(values['m50'] > 0.0)
+    Returns
+    -------
+    areas: `np.array`
+       Float array of total areas for each of the mags
+    """
 
-        depths = values['m50'][gd]
-        st = np.argsort(depths)
-        depths = depths[st]
+    pixsize = hpg.nside_to_pixel_area(depth_data['nside'], degrees=True)
 
-        fracgoods = values['fracgood'][gd[st]]
-
-        inds = np.clip(np.searchsorted(depths, mags) - 1, 1, depths.size - 1)
-
-        lo = (inds < 0)
-        areas[lo] = np.sum(fracgoods, dtype=np.float64) * pixsize
-        carea = pixsize * np.cumsum(fracgoods, dtype=np.float64)
-        areas[~lo] = carea[carea.size - inds[~lo]]
-
+    if (depth_data['w'] < 0.0):
+        # This is just constant area
+        areas = np.zeros(mags.size) + depth_data['config_area']
         return areas
 
-# This is incomplete, since I worry the general-use depthmap will be too memory
-# intensive for the volume limit mask.  TBD
-"""
-class MultibandDepthMap(object):
+    if len(depth_data['subpix_hpix']) > 0:
+        # for the subregion, we need the area covered in the main pixel
+        # I'm not sure what to do about border...but you shouldn't
+        # be running this with a subregion with a border
+        if depth_data['subpix_border'] > 0.0:
+            raise RuntimeError("Cannot run calc_areas() with a subregion with a border")
 
-    def __init__(self, config, depthfiles, bands):
+        bitShift = 2 * int(np.round(np.log(depth_data['nside'] / depth_data['subpix_nside']) / np.log(2)))
+        nFinePerSub = 2**bitShift
+        ipnest = np.zeros(0, dtype=np.int64)
+        for hpix in depth_data['subpix_hpix']:
+            ipnest_temp = np.left_shift(hpg.ring_to_nest(depth_data['subpix_nside'], hpix), bitShift) + np.arange(nFinePerSub)
+            ipnest = np.append(ipnest, ipnest_temp)
+    else:
+        ipnest = depth_data['sparse_depthmap'].valid_pixels
 
-        self.nband = len(bands) + 1
+    areas = np.zeros(mags.size)
 
+    values = depth_data['sparse_depthmap'].get_values_pix(ipnest)
 
-        self.depthfile = config.depthfile
+    gd, = np.where(values['m50'] > 0.0)
 
-        # We start by reading in the primary depth file
+    depths = values['m50'][gd]
+    st = np.argsort(depths)
+    depths = depths[st]
 
-        depthinfo, hdr = fitsio.read(self.config.depthfile, ext=1, header=True, lower=True)
-        dstr = Catalog(depthinfo)
+    fracgoods = values['fracgood'][gd[st]]
 
-        mband = Catalog(np.zeros(dstr.size, dtype=[('hpix', 'i8'),
-                                                   ('fracgood', 'f4'),
-                                                   ('exptime', 'f4', self.nband),
-                                                   ('limmag', 'f4', self.nband),
-                                                   ('m50', 'f4', self.nband)]))
-"""
+    inds = np.clip(np.searchsorted(depths, mags) - 1, 1, depths.size - 1)
+
+    lo = (inds < 0)
+    areas[lo] = np.sum(fracgoods, dtype=np.float64) * pixsize
+    carea = pixsize * np.cumsum(fracgoods, dtype=np.float64)
+    areas[~lo] = carea[carea.size - inds[~lo]]
+
+    return areas
 
 def convert_depthfile_to_healsparse(depthfile, healsparsefile, nsideCoverage, clobber=False):
     """
@@ -324,4 +302,3 @@ def convert_depthfile_to_healsparse(depthfile, healsparsefile, nsideCoverage, cl
     sparseMap.metadata = hdr
 
     sparseMap.write(healsparsefile, clobber=clobber)
-

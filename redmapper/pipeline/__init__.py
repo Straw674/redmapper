@@ -1,4 +1,4 @@
-from .zredtask import RunZredPixelTask
-from .redmappertask import RunRedmapperPixelTask, RuncatPixelTask, RunZmaskPixelTask, RunZScanPixelTask
-from .redmapperconsolidatetask import RedmapperConsolidateTask, RuncatConsolidateTask
-from .mempredict import MemPredict
+from .zredtask import run_zred_pixel_task
+from .redmappertask import run_redmapper_pixel_task, run_runcat_pixel_task, run_zmask_pixel_task, run_zscan_pixel_task
+from .redmapperconsolidatetask import run_redmapper_consolidate_task, run_runcat_consolidate_task
+from .mempredict import predict_memory

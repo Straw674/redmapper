@@ -14,8 +14,8 @@ import esutil
 
 from redmapper import Configuration
 from redmapper import GalaxyCatalog
-from redmapper import RunColormem
-from redmapper.calibration import SelectSpecRedGalaxies
+from redmapper.run_colormem import run_colormem
+from redmapper.calibration import select_spec_red_galaxies_wrapper
 from redmapper import Catalog
 
 class RunColormemTestCase(unittest.TestCase):
@@ -46,22 +46,23 @@ class RunColormemTestCase(unittest.TestCase):
         config.redgalfile = config.redmapper_filename('test_redgals')
         config.redgalmodelfile = config.redmapper_filename('test_redgalmodel')
 
-        selred = SelectSpecRedGalaxies(config)
-        selred.run()
+        select_spec_red_galaxies_wrapper(config)
 
         # Main test...
         config.zmemfile = config.redmapper_filename('test_zmem')
 
-        rcm = RunColormem(config)
-        rcm.run()
-        rcm.output_training()
+        cat, members = run_colormem(config)
+        use, = np.where(members.pcol > config.calib_pcut)
+        savemem = members[use]
+        savemem.to_fits_file(config.zmemfile)
+        cat.to_fits_file(config.redmapper_filename('colorcat'))
 
         # Check that the files are there...
         self.assertTrue(os.path.isfile(config.zmemfile))
 
         mem = fitsio.read(config.zmemfile, ext=1)
         testing.assert_equal(mem.size, 16)
-        testing.assert_array_almost_equal(mem['pcol'][0:3], np.array([0.954449, 0.8386, 0.88328]), 5)
+        testing.assert_array_almost_equal(mem['pcol'][0:3], np.array([0.95385, 0.83143, 0.88814]), 5)
         testing.assert_array_almost_equal(mem['z'][0:3], np.array([0.191797, 0.194327, 0.186235]), 2)
 
     def setUp(self):

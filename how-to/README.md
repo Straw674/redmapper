@@ -414,9 +414,8 @@ import numpy as np
 config = redmapper.Configuration('run.yml')
 config.run_min_nside = 4  # nside desired
 config.border = config.compute_border()
-redmapperRun = redmapper.RedmapperRun(config)
 # This will use python multiprocessing to run on config.calib_run_nproc cores
-redmapperRun.run(consolidate=False)
+redmapper.redmapper_run(config, consolidate=False)
 ```
 
 ### Step 5: Consolidate the Catalog Pixels

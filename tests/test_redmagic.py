@@ -11,12 +11,12 @@ import tempfile
 import glob
 
 from redmapper import Configuration
-from redmapper.redmagic import RedmagicParameterFitter, RedmagicCalibrator
-from redmapper.redmagic import RunRedmagicTask
-from redmapper import RedSequenceColorPar
+from redmapper.redmagic import fit_redmagic_parameters, fit_redmagic_bias_eratio, redmagic_cost, calibrate_redmagic
+from redmapper.redmagic import run_redmagic_task
+from redmapper import read_redsequence
 from redmapper import GalaxyCatalog
 from redmapper import Catalog
-from redmapper import VolumeLimitMask
+from redmapper.volumelimit import create_volume_limit_mask, calc_zmax
 
 class RedmagicCalTestCase(unittest.TestCase):
     def test_redmagic_fitter(self):
@@ -37,7 +37,7 @@ class RedmagicCalTestCase(unittest.TestCase):
 
         # Make a zred structure for mstar...
         config = Configuration(os.path.join('data_for_tests', 'testconfig.yaml'))
-        zredstr = RedSequenceColorPar(None, config=config)
+        zredstr = read_redsequence(None, config=config)
 
         # Set up the fitter...
         #randomn = np.random.normal(size=calstr2['z'][0, :].size)
@@ -55,25 +55,39 @@ class RedmagicCalTestCase(unittest.TestCase):
         scale = 1.0
         zcal = zcal_raw + rng.normal(loc=0.0, scale=zcal_e*scale, size=zcal_raw.size)
 
-        rmfitter = RedmagicParameterFitter(calstr['nodes'][0, :], calstr['corrnodes'][0, :],
-                                           calstr2['z'][0, :], calstr2['z_err'][0, :],
-                                           calstr2['chisq'][0, :], calstr2['mstar'][0, :],
-                                           zcal, zcal_e,
-                                           calstr2['refmag'][0, :], zsamp,
-                                           calstr2['zmax'][0, :],
-                                           calstr['etamin'][0], calstr['n0'][0],
-                                           calstr2['volume'][0, :], calstr2['zrange'][0, :],
-                                           calstr2['zbinsize'][0],
-                                           zredstr, maxchi=20.0,
-                                           ab_use=ab_use)
+        state = {
+            'nodes': np.atleast_1d(calstr['nodes'][0, :]).astype(np.float64),
+            'corrnodes': np.atleast_1d(calstr['corrnodes'][0, :]).astype(np.float64),
+            'z': np.atleast_1d(calstr2['z'][0, :]).astype(np.float64),
+            'z_err': np.atleast_1d(calstr2['z_err'][0, :]).astype(np.float64),
+            'zredmagic': np.atleast_1d(calstr2['z'][0, :]).astype(np.float64),
+            'zredmagic_e': np.atleast_1d(calstr2['z_err'][0, :]).astype(np.float64),
+            'chisq': np.atleast_1d(calstr2['chisq'][0, :]).astype(np.float64),
+            'mstar': np.atleast_1d(calstr2['mstar'][0, :]).astype(np.float64),
+            'zcal': np.atleast_1d(zcal).astype(np.float64),
+            'zcal_err': np.atleast_1d(zcal_e).astype(np.float64),
+            'refmag': np.atleast_1d(calstr2['refmag'][0, :]).astype(np.float64),
+            'zsamp': np.atleast_1d(zsamp).astype(np.float64),
+            'zredmagic_samp': np.atleast_1d(zsamp).astype(np.float64),
+            'zmax': np.atleast_1d(calstr2['zmax'][0, :]).astype(np.float64),
+            'etamin': calstr['etamin'][0],
+            'n0': calstr['n0'][0],
+            'volume': calstr2['volume'][0, :],
+            'zrange': calstr2['zrange'][0, :],
+            'zbinsize': calstr2['zbinsize'][0],
+            'zredstr': zredstr,
+            'ab_use': ab_use,
+            'ab_apply': False,
+            'maxchi': 20.0
+        }
 
         # These match the IDL values
-        testing.assert_almost_equal(rmfitter(calstr['cmax'][0, :]), 1.9331937798956758, 6)
+        testing.assert_almost_equal(redmagic_cost(calstr['cmax'][0, :], state), 1.9331937798956758, 6)
 
         p0_cval = np.zeros(calstr['nodes'][0, :].size) + 2.0
-        testing.assert_almost_equal(rmfitter(p0_cval), 317.4524284321642, 4)
+        testing.assert_almost_equal(redmagic_cost(p0_cval, state), 317.4524284321642, 4)
 
-        cvals = rmfitter.fit(p0_cval)
+        cvals = fit_redmagic_parameters(p0_cval, state)
 
         # This does not match the IDL output, because this is doing a lot
         # better job minimizing the function, at least in this test.
@@ -83,11 +97,11 @@ class RedmagicCalTestCase(unittest.TestCase):
 
         # Now we have to check the fitting with the afterburner
 
-        biasvals = np.zeros(rmfitter._corrnodes.size)
-        eratiovals = np.ones(rmfitter._corrnodes.size)
-        biasvals, eratiovals = rmfitter.fit_bias_eratio(cvals, biasvals, eratiovals)
+        biasvals = np.zeros(state['corrnodes'].size)
+        eratiovals = np.ones(state['corrnodes'].size)
+        biasvals, eratiovals = fit_redmagic_bias_eratio(cvals, biasvals, eratiovals, state)
 
-        cvals = rmfitter.fit(cvals, biaspars=biasvals, eratiopars=eratiovals, afterburner=True)
+        cvals = fit_redmagic_parameters(cvals, state, biaspars=biasvals, eratiopars=eratiovals, afterburner=True)
 
         # Skip this test.
         # testing.assert_almost_equal(cvals, np.array([2.3957, 3.0741, 0.8872]), 4)
@@ -114,10 +128,9 @@ class RedmagicCalTestCase(unittest.TestCase):
                              ('zred_samp', 'f4', config.zred_nsamp)])
         testgals.zred_samp[:, 0] = testgals.zred_uncorr
 
-        redmagic_cal = RedmagicCalibrator(config)
         # We have to have do_run=False here because we don't have a real
         # galaxy training set with associated zreds!
-        redmagic_cal.run(gals=testgals, do_run=False)
+        runfile_out = calibrate_redmagic(config, gals=testgals, do_run=False)
 
         # Read in the calibrated parameters
 
@@ -142,7 +155,7 @@ class RedmagicCalTestCase(unittest.TestCase):
         config_regular = Configuration(os.path.join(file_path, 'testconfig.yaml'))
         maskfile = config_regular.maskfile
 
-        config = Configuration(redmagic_cal.runfile)
+        config = Configuration(runfile_out)
 
         # This little dance removes the vmaskfile and creates a new one with
         # the same name in the same location
@@ -153,13 +166,12 @@ class RedmagicCalTestCase(unittest.TestCase):
         except AttributeError:
             vmaskfile = cal['vmaskfile'][0].rstrip()
         os.remove(vmaskfile)
-        mask = VolumeLimitMask(config, cal['etamin'][0], use_geometry=True)
+        mask = create_volume_limit_mask(config, cal['etamin'][0], use_geometry=True)
 
         rng = np.random.RandomState(12345)
 
         # Now test the running, using the output file which has valid galaxies/zreds
-        run_redmagic = RunRedmagicTask(redmagic_cal.runfile)
-        run_redmagic.run(rng=rng)
+        run_redmagic_task(runfile_out)
 
         # check that we have a redmagic catalog
         rmcatfile = config.redmapper_filename('redmagic_%s' % ('highdens'), withversion=True)
@@ -181,7 +193,7 @@ class RedmagicCalTestCase(unittest.TestCase):
         self.assertEqual(rand_cat.size, red_cat.size * 10)
 
         # And confirm that all the randoms are in the footprint
-        zmax = mask.calc_zmax(rand_cat.ra, rand_cat.dec)
+        zmax = calc_zmax(mask, rand_cat.ra, rand_cat.dec)
         self.assertTrue(np.all(rand_cat.z < zmax))
 
         # Now run in a different directory
@@ -193,12 +205,11 @@ class RedmagicCalTestCase(unittest.TestCase):
         os.rename(vmaskfile, os.path.join(relocpath,
                                           os.path.basename(vmaskfile)))
 
-        rerun_config = Configuration(redmagic_cal.runfile)
+        rerun_config = Configuration(runfile_out)
         rerun_config.redmagicfile = reloc_file
         rerun_configfile = os.path.join(self.test_dir, 'testconfig_redmagic_rerun.yml')
         rerun_config.output_yaml(rerun_configfile)
-        rerun_redmagic = RunRedmagicTask(rerun_configfile)
-        rerun_redmagic.run(clobber=True)
+        run_redmagic_task(rerun_configfile, clobber=True)
 
     def setUp(self):
         self.test_dir = None

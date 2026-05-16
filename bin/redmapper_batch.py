@@ -209,8 +209,7 @@ if need_maskgals:
     # Check to see if maskgals are there, and generate them if not.
     if not os.path.isfile(config.maskgalfile):
         print("Did not find maskgalfile %s.  Generating now." % (config.maskgalfile))
-        mask = redmapper.mask.get_mask(config, include_maskgals=False)
-        mask.gen_maskgals(config.maskgalfile)
+        redmapper.mask.gen_maskgals(config, config.maskgalfile)
 
 if batchconfig[batchmode]['batch'] == 'parsl':
     jobfile = os.path.join(jobpath, '%s_%d.py' % (jobname, index + 1))

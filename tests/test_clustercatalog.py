@@ -9,11 +9,11 @@ from redmapper import Cluster
 from redmapper import ClusterCatalog, Catalog
 from redmapper import Configuration
 from redmapper import GalaxyCatalog
-from redmapper import DataObject
-from redmapper import RedSequenceColorPar
-from redmapper import Background
-from redmapper import HPMask
-from redmapper import DepthMap
+from redmapper import read_redsequence
+from redmapper import read_background
+from redmapper.mask import get_mask, select_maskgals_sample, compute_maskgals_mark
+from redmapper import depthmap
+
 from redmapper.cluster import cluster_dtype_base
 
 
@@ -37,14 +37,14 @@ class ClusterCatalogTestCase(unittest.TestCase):
         gals_all = GalaxyCatalog.from_galfile(config.galfile)
 
         zred_filename = 'test_dr8_pars.fit'
-        zredstr = RedSequenceColorPar(file_path + '/' + zred_filename, fine=True)
+        zredstr = read_redsequence(file_path + '/' + zred_filename, fine=True)
 
         bkg_filename = 'test_bkg.fit'
-        bkg = Background('%s/%s' % (file_path, bkg_filename))
+        bkg = read_background('%s/%s' % (file_path, bkg_filename))
 
-        mask = HPMask(config, rng=rng)
-        maskgal_index = mask.select_maskgals_sample(maskgal_index=0)
-        depthstr = DepthMap(config)
+        mask = get_mask(config, rng=rng)
+        mask['maskgals'], mask['maskgal_index'] = select_maskgals_sample(config, mask['maskgals_all'], mask['rng'], maskgal_index=0)
+        depth_data = depthmap.read_depth_map(config)
 
         testcatfile = 'test_cluster_pos.fit'
         cat = ClusterCatalog.from_catfile(file_path + '/' + testcatfile,
@@ -73,10 +73,9 @@ class ClusterCatalogTestCase(unittest.TestCase):
         testing.assert_equal(c1.neighbors.size, u1.size)
 
         # and compute the richness on the first one...
-        mask.set_radmask(c0)
+        mask['maskgals'].mark = compute_maskgals_mark(mask['mask_data'], c0, mask['maskgals'], rng=mask['rng'], config=config)
 
-        depthstr.calc_maskdepth(mask.maskgals, c0.ra, c0.dec, c0.mpc_scale)
-
+        depthmap.compute_maskdepth(depth_data, mask['maskgals'], c0.ra, c0.dec, c0.mpc_scale)
         richness = c0.calc_richness(mask)
 
         # Make sure the numbers were propagated to the parent catalog

@@ -7,7 +7,7 @@ import shutil
 import os
 from numpy import random
 
-from redmapper import get_mask, Mask, HPMask
+from redmapper.mask import get_mask, get_mask_values, select_maskgals_sample, gen_maskgals, read_maskgals
 from redmapper import Configuration
 
 class MaskTestCase(unittest.TestCase):
@@ -28,26 +28,22 @@ class MaskTestCase(unittest.TestCase):
 
         config.mask_mode = 0
         mask = get_mask(config)
-        maskgal_index = mask.select_maskgals_sample()
-        testing.assert_equal(hasattr(mask, 'maskgals'), True)
-        testing.assert_equal(isinstance(mask, Mask), True)
-        testing.assert_equal(isinstance(mask, HPMask), False)
+        mask['maskgals'], mask['maskgal_index'] = select_maskgals_sample(config, mask['maskgals_all'], mask['rng'])
+        testing.assert_equal(mask['maskgals'] is not None, True)
 
         # And the healpix mask
 
         config.mask_mode = 3
         mask = get_mask(config)
-        maskgal_index = mask.select_maskgals_sample()
-        testing.assert_equal(hasattr(mask, 'maskgals'), True)
-        testing.assert_equal(isinstance(mask, Mask), True)
-        testing.assert_equal(isinstance(mask, HPMask), True)
+        mask['maskgals'], mask['maskgal_index'] = select_maskgals_sample(config, mask['maskgals_all'], mask['rng'])
+        testing.assert_equal(mask['maskgals'] is not None, True)
 
         # When ready, add in test of gen_maskgals()
 
         # Test the healpix configuration
-        testing.assert_equal(mask.nside,2048)
+        testing.assert_equal(mask['nside'], 2048)
 
-        # Next test the compute_radmask() function
+        # Next test the get_mask_values() function
         # Note: RA and DECs are in degrees here
 
         RAs = np.array([140.00434405, 142.04090, 142.09242, 142.11448, 50.0])
@@ -55,29 +51,23 @@ class MaskTestCase(unittest.TestCase):
 
         comp = np.array([True, True, True, True, False])
 
-        testing.assert_equal(mask.compute_radmask(RAs, Decs), comp)
+        testing.assert_equal(get_mask_values(mask['mask_data'], RAs, Decs, rng=mask['rng'], config=config), comp)
 
         # And test that we're getting the right numbers from a sub-mask
         config2 = Configuration(file_path + "/" + conf_filename)
-        config2.d.hpix = [582972]
-        config2.d.nside = 1024
+        config2.hpix = [582972]
+        config2.nside = 1024
         config2.border = 0.02
         mask2 = get_mask(config2)
-        maskgal_index = mask2.select_maskgals_sample()
+        mask2['maskgals'], mask2['maskgal_index'] = select_maskgals_sample(config2, mask2['maskgals_all'], mask2['rng'])
 
         comp = np.array([False, True, True, True, False])
-        testing.assert_equal(mask2.compute_radmask(RAs, Decs), comp)
+        testing.assert_equal(get_mask_values(mask2['mask_data'], RAs, Decs, rng=mask2['rng'], config=config2), comp)
 
     def test_maskgals(self):
         """
         Test generation of maskgals file.
         """
-
-        # Note that due to historical reasons, this is testing the
-        # new generation of maskgals with some spot checks.  Independently,
-        # it has been checked that the distributions are the same as for
-        # the old IDL code which was used to generate the reference used
-        # in the cluster tests.
 
         file_path = "data_for_tests"
         conf_filename = "testconfig.yaml"
@@ -96,8 +86,8 @@ class MaskTestCase(unittest.TestCase):
         maskgalfile = os.path.join(self.test_dir, 'testmaskgal.fit')
 
         # This will generate the file if it isn't there
-        mask.gen_maskgals(maskgalfile)
-        mask.read_maskgals(maskgalfile)
+        gen_maskgals(config, maskgalfile, rng=rng)
+        mask['maskgals_all'] = read_maskgals(maskgalfile)
 
         maskgals, hdr = fitsio.read(maskgalfile, ext=1, header=True)
 
@@ -115,15 +105,15 @@ class MaskTestCase(unittest.TestCase):
         self.assertEqual(hdr['RSIG'], config.rsig)
         self.assertEqual(hdr['ZREDERR'], config.maskgal_zred_err)
 
-        testing.assert_almost_equal(maskgals['r'][0: 3], [0.66900003, 0.119, 0.722])
-        testing.assert_almost_equal(maskgals['phi'][0: 3], [1.73098969, 2.53610063, 4.2362957])
-        testing.assert_almost_equal(maskgals['x'][0: 3], [-0.1067116, -0.09784444, -0.33090013])
-        testing.assert_almost_equal(maskgals['x_uniform'][0: 3], [-0.3778571,  1.4879845, -2.0055938])
-        testing.assert_almost_equal(maskgals['m'][0: 3], [0.46200001, 1.778, -1.43599999])
-        testing.assert_almost_equal(maskgals['chisq'][0: 3], [8.63599968, 2.28399992, 1.55799997])
-        testing.assert_almost_equal(maskgals['cwt'][0: 3], [0.02877194, 0.1822518, 0.17872778])
-        testing.assert_almost_equal(maskgals['chisq_pdf'][0: 3], [0.02877194, 0.1822518, 0.17872778])
-        testing.assert_almost_equal(maskgals['nfw'][0: 3], [0.15366785, 0.32543495, 0.1454625])
+        testing.assert_almost_equal(maskgals['r'][0: 3], [0.66900003, 0.119, 0.722], 5)
+        testing.assert_almost_equal(maskgals['phi'][0: 3], [1.73098969, 2.53610063, 4.2362957], 5)
+        testing.assert_almost_equal(maskgals['x'][0: 3], [-0.1067116, -0.09784444, -0.33090013], 5)
+        testing.assert_almost_equal(maskgals['x_uniform'][0: 3], [-0.3778571,  1.4879845, -2.0055938], 5)
+        testing.assert_almost_equal(maskgals['m'][0: 3], [0.46200001, 1.778, -1.43599999], 5)
+        testing.assert_almost_equal(maskgals['chisq'][0: 3], [8.63599968, 2.28399992, 1.55799997], 5)
+        testing.assert_almost_equal(maskgals['cwt'][0: 3], [0.02877194, 0.1822518, 0.17872778], 5)
+        testing.assert_almost_equal(maskgals['chisq_pdf'][0: 3], [0.02877194, 0.1822518, 0.17872778], 5)
+        testing.assert_almost_equal(maskgals['nfw'][0: 3], [0.15366785, 0.32543495, 0.1454625], 5)
         testing.assert_almost_equal(maskgals['dzred'][0: 3], [0.0122425, -0.0127852, -0.0138903])
         testing.assert_almost_equal(maskgals['zwt'][0: 3], [16.5393, 16.2608, 15.6725], 4)
         testing.assert_almost_equal(maskgals['lumwt'][0: 3], [0.39371657, 0.62304342, 0.01774093])

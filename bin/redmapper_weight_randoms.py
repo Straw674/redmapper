@@ -20,9 +20,8 @@ if __name__ == '__main__':
     args = parser.parse_args()
 
     config = redmapper.Configuration(args.configfile)
-    weigher = redmapper.RandomWeigher(config, args.randfile)
     for lambda_cut in args.lambda_cuts:
-        wt_randfile, wt_areafile = weigher.weight_randoms(lambda_cut)
+        wt_randfile, wt_areafile = redmapper.weight_randoms(config, args.randfile, lambda_cut)
 
         print("Made weighted random file %s" % (wt_randfile))
         print("Made weighted area file %s" % (wt_areafile))

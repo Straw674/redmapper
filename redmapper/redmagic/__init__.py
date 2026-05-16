@@ -1,4 +1,4 @@
-from .redmagic_calibrate import RedmagicParameterFitter, RedmagicCalibrator
-from .redmagic_selector import RedmagicSelector
-from .redmagictask import RunRedmagicTask
-from .redmagic_randoms import RedmagicGenerateRandoms
+from .redmagic_selector import read_redmagic_calibration, select_redmagic_galaxies
+from .redmagic_randoms import generate_redmagic_randoms
+from .redmagic_calibrate import fit_redmagic_parameters, fit_redmagic_bias_eratio, redmagic_cost, calibrate_redmagic
+from .redmagictask import run_redmagic_task

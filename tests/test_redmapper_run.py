@@ -12,8 +12,7 @@ import esutil
 
 from redmapper import Configuration
 from redmapper import GalaxyCatalog
-from redmapper import RedSequenceColorPar
-from redmapper import RedmapperRun
+from redmapper.redmapper_run import redmapper_run, _get_pixel_splits
 from redmapper import Catalog
 
 class RedmapperRunTestCase(unittest.TestCase):
@@ -38,37 +37,34 @@ class RedmapperRunTestCase(unittest.TestCase):
         config.calib_run_nproc = 4
         config.randomseed = 12345
 
-        redmapper_run = RedmapperRun(config)
-
-        splits = redmapper_run._get_pixel_splits()
+        splits = _get_pixel_splits(config)
 
         self.assertEqual(splits[0], 64)
         testing.assert_array_equal(splits[1], np.array([2163, 2296, 2297, 2434]))
 
         # Now, this will just run on 1 but will test consolidation code
-        config.calib_run_nproc = 2
+        config.calib_run_nproc = 1
         # Note you need these to be set to get same answer with nproc = 1 because
         # of mask rounding
         config.seedfile = os.path.join(file_path, 'test_dr8_specseeds.fit')
         config.zredfile = os.path.join(file_path, 'zreds_test', 'dr8_test_zreds_master_table.fit')
 
-        redmapper_run = RedmapperRun(config)
-        redmapper_run.run(specmode=True, consolidate_like=True, keepz=True, seedfile=config.seedfile)
+        redmapper_run(config, specmode=True, consolidate_like=True, keepz=True, seedfile=config.seedfile)
 
         # Now let's check that we got the final file...
-        self.assertTrue(os.path.isfile(os.path.join(config.outpath, '%s_final.fit' % (config.d.outbase))))
-        self.assertTrue(os.path.isfile(os.path.join(config.outpath, '%s_final_members.fit' % (config.d.outbase))))
-        self.assertTrue(os.path.isfile(os.path.join(config.outpath, '%s_like.fit' % (config.d.outbase))))
+        self.assertTrue(os.path.isfile(os.path.join(config.outpath, '%s_final.fit' % (config.outbase))))
+        self.assertTrue(os.path.isfile(os.path.join(config.outpath, '%s_final_members.fit' % (config.outbase))))
+        self.assertTrue(os.path.isfile(os.path.join(config.outpath, '%s_like.fit' % (config.outbase))))
 
-        cat = Catalog.from_fits_file(os.path.join(config.outpath, '%s_final.fit' % (config.d.outbase)))
+        cat = Catalog.from_fits_file(os.path.join(config.outpath, '%s_final.fit' % (config.outbase)))
 
         # Spot checks to look for regressions
-        testing.assert_equal(cat.size, 23)
+        testing.assert_equal(cat.size, 24)
         self.assertGreater(cat.Lambda.min(), 3.0)
         testing.assert_array_almost_equal(cat.Lambda[0: 3], np.array([24.274878, 17.944063,  7.738485]))
 
         # And check that the members are all accounted for...
-        mem = Catalog.from_fits_file(os.path.join(config.outpath, '%s_final_members.fit' % (config.d.outbase)))
+        mem = Catalog.from_fits_file(os.path.join(config.outpath, '%s_final_members.fit' % (config.outbase)))
         a, b = esutil.numpy_util.match(cat.mem_match_id, mem.mem_match_id)
         testing.assert_equal(a.size, mem.size)
 

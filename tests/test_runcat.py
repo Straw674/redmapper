@@ -8,12 +8,10 @@ from redmapper import Cluster
 from redmapper import ClusterCatalog
 from redmapper import Configuration
 from redmapper import GalaxyCatalog
-from redmapper import DataObject
-from redmapper import RedSequenceColorPar
-from redmapper import Background
-from redmapper import HPMask
-from redmapper import DepthMap
-from redmapper import RunCatalog
+from redmapper import read_background
+from redmapper.mask import get_mask
+# removed DepthMap
+from redmapper.runcat import run_catalog
 
 class RuncatTestCase(unittest.TestCase):
     """
@@ -34,25 +32,23 @@ class RuncatTestCase(unittest.TestCase):
         config.bkg_local_compute = True
         config.randomseed = 12345
 
-        runcat = RunCatalog(config)
+        cat, _ = run_catalog(config, do_percolation_masking=False)
 
-        runcat.run(do_percolation_masking=False)
+        testing.assert_equal(cat.mem_match_id, [1, 2, 3])
+        testing.assert_allclose(cat.Lambda, [24.16809, 26.92924, 13.35232], rtol=2e-3)
+        testing.assert_allclose(cat.lambda_e, [2.50009, 4.85051, 2.46239], rtol=2e-3)
+        testing.assert_almost_equal(cat.z_lambda, [0.2278546, 0.3225739, 0.2176394], 5)
+        testing.assert_almost_equal(cat.z_lambda_e, [0.0063102, 0.0135351, 0.0098461], 5)
+        testing.assert_allclose(cat.bkg_local, [1.2287012, 1.6885487, 1.7221997], rtol=2e-3)
 
-        testing.assert_equal(runcat.cat.mem_match_id, [1, 2, 3])
-        testing.assert_allclose(runcat.cat.Lambda, [24.16809, 26.92924, 13.35232], rtol=2e-3)
-        testing.assert_allclose(runcat.cat.lambda_e, [2.50009, 4.85051, 2.46239], rtol=2e-3)
-        testing.assert_almost_equal(runcat.cat.z_lambda, [0.2278546, 0.3225739, 0.2176394], 5)
-        testing.assert_almost_equal(runcat.cat.z_lambda_e, [0.0063102, 0.0135351, 0.0098461], 5)
-        testing.assert_allclose(runcat.cat.bkg_local, [1.2287012, 1.6885487, 1.7221997], rtol=2e-3)
+        cat, _ = run_catalog(config, do_percolation_masking=True)
 
-        runcat.run(do_percolation_masking=True)
-
-        testing.assert_equal(runcat.cat.mem_match_id, [1, 2, 3])
-        testing.assert_almost_equal(runcat.cat.Lambda, [24.16809, 26.92924, -1.], 5)
-        testing.assert_allclose(runcat.cat.lambda_e, [2.50009,  4.85051, -1], rtol=2e-3)
-        testing.assert_almost_equal(runcat.cat.z_lambda, [0.2278544,  0.3225641, -1.], 5)
-        testing.assert_almost_equal(runcat.cat.z_lambda_e, [0.0063079,  0.0135317, -1.], 5)
-        testing.assert_allclose(runcat.cat.bkg_local, [1.2287, 1.68855, 0.], rtol=2e-3)
+        testing.assert_equal(cat.mem_match_id, [1, 2, 3])
+        testing.assert_almost_equal(cat.Lambda, [24.16809, 26.92924, -1.], 5)
+        testing.assert_allclose(cat.lambda_e, [2.50009,  4.85051, -1], rtol=2e-3)
+        testing.assert_almost_equal(cat.z_lambda, [0.2278544,  0.3225641, -1.], 5)
+        testing.assert_almost_equal(cat.z_lambda_e, [0.0063079,  0.0135317, -1.], 5)
+        testing.assert_allclose(cat.bkg_local, [1.2287, 1.68855, 0.], rtol=2e-3)
 
 if __name__=='__main__':
     unittest.main()

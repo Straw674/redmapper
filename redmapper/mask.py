@@ -1,6 +1,7 @@
-"""Classes for describing geometry masks in redmapper.
+"""Functions and classes for describing geometry masks in redmapper.
 
-This file contains classes for reading and using geometry masks.
+This file contains functions and classes for reading and using geometry masks,
+transitioning to a functional style.
 """
 import esutil
 import fitsio
@@ -10,476 +11,424 @@ from scipy.special import erf
 import scipy.integrate
 import healsparse
 
-from .catalog import Catalog,Entry
+from .catalog import Catalog, Entry
 from .utilities import TOTAL_SQDEG, SEC_PER_DEG, astro_to_sphere, calc_theta_i, apply_errormodels
 from .utilities import make_lockfile, sample_from_pdf, chisq_pdf, schechter_pdf, nfw_pdf
 from .utilities import get_healsparse_subpix_indices
 
 CURRENT_MASKGAL_VERSION = 7
 
-class Mask(object):
+def read_maskgals(maskgalfile):
     """
-    A super-class to describe geometry footpint masks.
-    """
-
-    # note: not sure how to organize this.
-    #   We need a routine that looks at the mask_mode and instantiates
-    #   the correct type.  How is this typically done?
-
-    def __init__(self, config, include_maskgals=True, rng=None):
-        """
-        Instantiate a placeholder geometry mask that will describe all galaxies
-        as in the mask.
-
-        Parameters
-        ----------
-        config: `redmapper.Configuration`
-           Configuration object
-        include_maskgals: `bool`, optional
-           Also read in the maskgals.  Default is True.
-        rng : `np.random.RandomState`, optional
-            Random state to use.
-        """
-        self.config = config
-
-        # This will raise if maskgals aren't available
-        if include_maskgals:
-            self.read_maskgals(config.maskgalfile)
-
-        if rng is None:
-            rng = np.random.RandomState(seed=self.config.randomseed)
-        self.rng = rng
-
-    def compute_radmask(self, ra, dec):
-        """
-        Compute the geometric mask value at a list of positions.
-
-        Parameters
-        ----------
-        ra: `np.array`
-           Float array of right ascensions
-        dec: `np.array`
-           Float array of declinations
-
-        Returns
-        -------
-        maskvals: `np.array`
-           Bool array of True ("in the footprint") for each ra/dec.
-        """
-        _ra = np.atleast_1d(ra)
-        _dec = np.atleast_1d(dec)
-
-        if (_ra.size != _dec.size):
-            raise ValueError("ra, dec must be same length")
-
-        maskvals = np.ones(_ra.size, dtype=bool)
-        return maskvals
-
-    def read_maskgals(self, maskgalfile):
-        """
-        Read the "maskgal" file for monte carlo estimation of coverage.
-
-        Note that this reads the file into the object.
-
-        Parameters
-        ----------
-        maskgalfile: `str`
-           Filename of maskgal file with monte carlo galaxies
-        """
-
-        if not os.path.isfile(maskgalfile):
-            raise RuntimeError("Could not find maskgalfile %s.  Please run mask.gen_maskgals(maskgalfile)" % (maskgalfile))
-
-        # Check version
-        hdr = fitsio.read_header(maskgalfile, ext=1)
-        if (hdr['version'] != CURRENT_MASKGAL_VERSION):
-            raise RuntimeError("maskgalfile %s is old version.  Please run mask.gen_maskgals(maskgalfile)" % (maskgalfile))
-
-        # Read the maskgals
-        # These are going to be *all* the maskgals, but we only operate on a subset
-        # at a time
-        self.maskgals_all = Catalog.from_fits_file(maskgalfile)
-
-    def select_maskgals_sample(self, maskgal_index=None):
-        """
-        Select a subset of maskgals by sampling.
-
-        This will set self.maskgals to the subset in question.
-
-        Parameters
-        ----------
-        maskgal_index: `int`, optional
-           Pre-selected index to sample from (for reproducibility).
-           Default is None (select randomly).
-        """
-
-        if maskgal_index is None:
-            maskgal_index = self.rng.choice(self.config.maskgal_nsamples)
-
-        self.maskgals = self.maskgals_all[maskgal_index * self.config.maskgal_ngals:
-                                          (maskgal_index + 1) * self.config.maskgal_ngals]
-
-        return maskgal_index
-
-    def gen_maskgals(self, maskgalfile):
-        """
-        Method to generate the maskgal monte carlo galaxies.
-
-        Parameters
-        ----------
-        maskgalfile: `str`
-           Name of maskgal file to generate.
-        """
-
-        minrad = np.clip(np.floor(10.*self.config.percolation_r0 * (3./100.)**self.config.percolation_beta) / 10., None, 0.5)
-        maxrad = np.ceil(10.*self.config.percolation_r0 * (300./100.)**self.config.percolation_beta) / 10.
-
-        nradbins = np.ceil((maxrad - minrad) / self.config.maskgal_rad_stepsize).astype(np.int32) + 1
-        radbins = np.arange(nradbins, dtype=np.float32) * self.config.maskgal_rad_stepsize + minrad
-
-        nmag = self.config.nmag
-        ncol = nmag - 1
-
-        ngals = self.config.maskgal_ngals * self.config.maskgal_nsamples
-
-        maskgals = Catalog.zeros(ngals, dtype=[('r', 'f4'),
-                                               ('phi', 'f4'),
-                                               ('x', 'f4'),
-                                               ('y', 'f4'),
-                                               ('r_uniform', 'f4'),
-                                               ('x_uniform', 'f4'),
-                                               ('y_uniform', 'f4'),
-                                               ('m', 'f4'),
-                                               ('refmag', 'f4'),
-                                               ('refmag_obs', 'f4'),
-                                               ('refmag_obs_err', 'f4'),
-                                               ('chisq', 'f4'),
-                                               ('cwt', 'f4'),
-                                               ('chisq_pdf', 'f4'),
-                                               ('nfw', 'f4'),
-                                               ('dzred', 'f4'),
-                                               ('zwt', 'f4'),
-                                               ('lumwt', 'f4'),
-                                               ('lum_pdf', 'f4'),
-                                               ('limmag', 'f4'),
-                                               ('limmag_dered', 'f4'),
-                                               ('exptime', 'f4'),
-                                               ('m50', 'f4'),
-                                               ('eff', 'f4'),
-                                               ('w', 'f4'),
-                                               ('theta_r', 'f4', nradbins),
-                                               ('mark', bool),
-                                               ('radbins', 'f4', nradbins),
-                                               ('nin', 'f4', nradbins),
-                                               ('nin_orig', 'f4', nradbins),
-                                               ('zp', 'f4'),
-                                               ('ebv', 'f4'),
-                                               ('extinction', 'f4'),
-                                               ('nsig', 'f4')])
-
-        maskgals['radbins'] = np.tile(radbins, maskgals.size).reshape(maskgals.size, nradbins)
-
-        # Generate chisq
-        maskgals.chisq = sample_from_pdf(chisq_pdf, [0.0, self.config.chisq_max],
-                                         self.config.chisq_max / 10000.,
-                                         maskgals.size, self.rng, k=ncol)
-        # Generate mstar
-        maskgals.m = sample_from_pdf(schechter_pdf,
-                                     [-2.5*np.log10(10.0),
-                                       -2.5*np.log10(self.config.lval_reference) + self.config.maskgal_dmag_extra],
-                                     0.002, maskgals.size, self.rng,
-                                     alpha=self.config.calib_lumfunc_alpha, mstar=0.0)
-        # Generate nfw(r)
-        maskgals.r = sample_from_pdf(nfw_pdf,
-                                     [0.001, maxrad],
-                                     0.001, maskgals.size, self.rng, radfactor=True)
-
-        # Generate phi
-        maskgals.phi = 2. * np.pi * self.rng.random(size=maskgals.size)
-
-        # Precompute x/y
-        maskgals.x = maskgals.r * np.cos(maskgals.phi)
-        maskgals.y = maskgals.r * np.sin(maskgals.phi)
-
-        # And uniform x/y
-        maskgals.r_uniform = self.config.bkg_local_annuli[1] * np.sqrt(self.rng.uniform(size=maskgals.size))
-        theta_new = self.rng.uniform(size=maskgals.size)*2*np.pi
-        maskgals.x_uniform = maskgals.r_uniform*np.cos(theta_new)
-        maskgals.y_uniform = maskgals.r_uniform*np.sin(theta_new)
-
-        # Compute weights to go with these values
-
-        # Chisq weight
-        maskgals.cwt = chisq_pdf(maskgals.chisq, ncol)
-        maskgals.chisq_pdf = maskgals.cwt
-
-        # Nfw weight
-        maskgals.nfw = nfw_pdf(maskgals.r, radfactor=True)
-
-        # luminosity weight
-
-        # We just choose a reference mstar for the normalization code
-        mstar = 19.0
-        normmag = mstar - 2.5 * np.log10(self.config.lval_reference)
-        steps = np.arange(10.0, normmag, 0.01)
-        f = schechter_pdf(steps, alpha=self.config.calib_lumfunc_alpha, mstar=mstar)
-        n = scipy.integrate.simpson(y=f, x=steps)
-        maskgals.lum_pdf = schechter_pdf(maskgals.m + mstar, mstar=mstar, alpha=self.config.calib_lumfunc_alpha)
-        maskgals.lumwt = maskgals.lum_pdf / n
-
-        # zred weight
-        maskgals.dzred = self.rng.normal(loc=0.0, scale=self.config.maskgal_zred_err, size=maskgals.size)
-        maskgals.zwt = (1. / (np.sqrt(2.*np.pi) * self.config.maskgal_zred_err)) * np.exp(-(maskgals.dzred**2.) / (2.*self.config.maskgal_zred_err**2.))
-
-        # And we need the radial function for each set of samples
-        for j in range(self.config.maskgal_nsamples):
-            indices = np.arange(j * self.config.maskgal_ngals,
-                                (j + 1) * self.config.maskgal_ngals)
-
-            # Radial function
-            for i, rad in enumerate(radbins):
-                inside, = np.where((maskgals.r[indices] <= rad) &
-                                   (maskgals.m[indices] < -2.5*np.log10(self.config.lval_reference)))
-                maskgals.nin_orig[indices, i] = inside.size
-
-                if self.config.rsig <= 0.0:
-                    theta_r = np.ones(self.config.maskgal_ngals)
-                else:
-                    theta_r = 0.5 + 0.5*erf((rad - maskgals.r[indices]) / (np.sqrt(2.)*self.config.rsig))
-                maskgals.theta_r[indices, i] = theta_r
-
-                inside2, = np.where(maskgals.m[indices] < -2.5*np.log10(self.config.lval_reference))
-                maskgals.nin[indices, i] = np.sum(theta_r[inside2], dtype=np.float64)
-
-        if self.config.more_qa_plots:
-            import matplotlib.pyplot as plt
-
-            if not os.path.exists(self.config.plotpath):
-                os.makedirs(self.config.plotpath)
-
-            # Plot spatial distribution
-            fig = plt.figure(figsize=(8, 8))
-            ax = fig.add_subplot(111)
-            # Plot a subset
-            sub = np.random.choice(maskgals.size, size=min(maskgals.size, 10000), replace=False)
-            ax.plot(maskgals.x[sub], maskgals.y[sub], 'k.', markersize=1)
-            ax.set_xlabel('X (Mpc)')
-            ax.set_ylabel('Y (Mpc)')
-            ax.set_title('Maskgals Spatial Distribution')
-            ax.set_aspect('equal')
-            fig.savefig(os.path.join(self.config.plotpath, 'maskgals_spatial.png'))
-            plt.close(fig)
-
-            # Plot radial distribution
-            fig = plt.figure(figsize=(8, 6))
-            ax = fig.add_subplot(111)
-            ax.hist(maskgals.r, bins=100, histtype='step')
-            ax.set_xlabel('R (Mpc)')
-            ax.set_title('Maskgals Radial Distribution')
-            fig.savefig(os.path.join(self.config.plotpath, 'maskgals_radial.png'))
-            plt.close(fig)
-
-            # Plot magnitude distribution
-            fig = plt.figure(figsize=(8, 6))
-            ax = fig.add_subplot(111)
-            ax.hist(maskgals.m, bins=100, histtype='step')
-            ax.set_xlabel('m - mstar')
-            ax.set_title('Maskgals Magnitude Distribution')
-            fig.savefig(os.path.join(self.config.plotpath, 'maskgals_mag.png'))
-            plt.close(fig)
-
-            # Plot chisq distribution
-            fig = plt.figure(figsize=(8, 6))
-            ax = fig.add_subplot(111)
-            ax.hist(maskgals.chisq, bins=100, histtype='step')
-            ax.set_xlabel('Chisq')
-            ax.set_title('Maskgals Chisq Distribution')
-            fig.savefig(os.path.join(self.config.plotpath, 'maskgals_chisq.png'))
-            plt.close(fig)
-
-        # And save it
-
-        hdr = fitsio.FITSHDR()
-        hdr['version'] = CURRENT_MASKGAL_VERSION
-        hdr['r0'] = self.config.percolation_r0
-        hdr['beta'] = self.config.percolation_beta
-        hdr['stepsize'] = self.config.maskgal_rad_stepsize
-        hdr['nmag'] = self.config.nmag
-        hdr['ngals'] = self.config.maskgal_ngals
-        hdr['chisqmax'] = self.config.chisq_max
-        hdr['lvalref'] = self.config.lval_reference
-        hdr['extra'] = self.config.maskgal_dmag_extra
-        hdr['alpha'] = self.config.calib_lumfunc_alpha
-        hdr['rsig'] = self.config.rsig
-        hdr['zrederr'] = self.config.maskgal_zred_err
-
-        maskgals.to_fits_file(maskgalfile, clobber=True, header=hdr)
-
-
-    def set_radmask(self, cluster):
-        """
-        Assign mask (0: out; 1: in) values to self.maskgals.mark for a given cluster.
-
-        Parameters
-        ----------
-        cluster: `redmapper.Cluster`
-           Cluster to get position/redshift/scaling
-        """
-        # note this probably can be in the superclass, no?
-        ras = cluster.ra + self.maskgals.x/(cluster.mpc_scale)/np.cos(np.radians(cluster.dec))
-        decs = cluster.dec + self.maskgals.y/(cluster.mpc_scale)
-        self.maskgals.mark = self.compute_radmask(ras,decs)
-
-    def calc_maskcorr(self, mstar, maxmag, limmag):
-        """
-        Calculate mask correction cpars, a third-order polynomial which describes the
-        mask fraction of a cluster as a function of radius.
-
-        Parameters
-        ----------
-        mstar: `float`
-           mstar (mag) at cluster redshift
-        maxmag: `float`
-           maximum magnitude for use in luminosity function filter
-        limmag: `float`
-           Survey or local limiting magnitude
-
-        Returns
-        -------
-        cpars: `np.array`
-           Third-order polynomial parameters describing maskfrac as function of radius
-        """
-        mag_in = self.maskgals.m + mstar
-        self.maskgals.refmag = mag_in
-
-        if self.maskgals.limmag[0] > 0.0:
-            mag, mag_err = apply_errormodels(self.maskgals, mag_in, rng=self.rng)
-
-            self.maskgals.refmag_obs = mag
-            self.maskgals.refmag_obs_err = mag_err
-        else:
-            mag = mag_in
-            mag_err = 0*mag_in
-            raise ValueError('Survey limiting magnitude <= 0!')
-            # Raise error here as this would lead to divide by zero if called.
-
-        if (self.maskgals.w[0] < 0) or (self.maskgals.w[0] == 0 and
-            np.amax(self.maskgals.m50) == 0):
-            theta_i = calc_theta_i(mag, mag_err, maxmag, limmag)
-        elif (self.maskgals.w[0] == 0):
-            theta_i = calc_theta_i(mag, mag_err, maxmag, self.maskgals.m50)
-        else:
-            raise Exception('Unsupported mode!')
-
-        p_det = theta_i*self.maskgals.mark
-        c = 1 - np.dot(p_det, self.maskgals.theta_r) / self.maskgals.nin[0]
-
-        cpars = np.polyfit(self.maskgals.radbins[0], c, 3)
-
-        return cpars
-
-class HPMask(Mask):
-    """
-    A class to use a redmapper healpix geometric mask.
-
-    This is described as mask_mode == 3 for compatibility with the old IDL code.
-    """
-
-    def __init__(self, config, **kwargs):
-        """
-        Instantiate an HPMask
-
-        Parameters
-        ----------
-        config: `redmapper.Configuration`
-           Configuration object.  Reads mask from config.maskfile.
-        include_maskgals: `bool`, optional
-           Also read in the maskgals.  Default is True.
-        """
-        # record for posterity
-        self.maskfile = config.maskfile
-
-        # Check if the file is of healsparse type... if not, raise and suggest
-        # the conversion code
-
-        hdr = fitsio.read_header(self.maskfile, ext=1)
-        if 'PIXTYPE' not in hdr or hdr['PIXTYPE'] != 'HEALSPARSE':
-            raise RuntimeError("Need to specify mask in healsparse format.  See redmapper_convert_mask_to_healsparse.py")
-
-        cov_hdr = fitsio.read_header(self.maskfile, ext='COV')
-        nside_coverage = cov_hdr['NSIDE']
-
-        # Which subpixels are we reading?
-        if len(config.d.hpix) > 0:
-            covpixels = get_healsparse_subpix_indices(config.d.nside, config.d.hpix,
-                                                      config.border, nside_coverage)
-        else:
-            # Read in the whole thing
-            covpixels = None
-
-        self.sparse_fracgood = healsparse.HealSparseMap.read(self.maskfile, pixels=covpixels)
-
-        self.nside = self.sparse_fracgood.nside_sparse
-
-        super(HPMask, self).__init__(config, **kwargs)
-
-    def compute_radmask(self, ras, decs):
-        """
-        Compute the geometric mask value at a list of positions.
-
-        In the footprint is True, outside is False.
-
-        Parameters
-        ----------
-        ras: `np.array`
-           Float array of right ascensions
-        decs: `np.array`
-           Float array of declinations
-
-        Returns
-        -------
-        maskvals: `np.array`
-           Bool array of True (in footprint) and False (out of footprint) for
-           each ra/dec.
-        """
-
-        if (ras.size != decs.size):
-            raise ValueError("ra, dec must be same length")
-
-        gd, = np.where(np.abs(decs) < 90.0)
-
-        fracgood = np.zeros(ras.size, dtype=np.float64)
-        fracgood[gd] = self.sparse_fracgood.get_values_pos(ras[gd], decs[gd], lonlat=True)
-
-        radmask = np.zeros(ras.size, dtype=bool)
-        radmask[np.where(fracgood > self.rng.rand(ras.size))] = True
-        return radmask
-
-
-def get_mask(config, include_maskgals=True, rng=None):
-    """
-    Convenience function to look at a config file and load the appropriate type of mask.
-
-    Uses config.mask_mode to determine mask type and config.maskfile for mask filename,
+    Read the "maskgal" file for monte carlo estimation of coverage.
 
     Parameters
     ----------
-    config: `redmapper.Configuration`
-       Configuration object
-    include_maskgals : `bool`, optional
-        Include maskgals in the mask?
-    rng : `np.random.RandomState`, optional
-        Use this RandomState?
-    """
+    maskgalfile: `str`
+       Filename of maskgal file with monte carlo galaxies
 
-    if config.mask_mode == 0:
-        # This is no mask!
-        # Return a bare object with maskgal functionality
-        return Mask(config, include_maskgals=include_maskgals, rng=rng)
-    elif config.mask_mode == 3:
-        # This is a healpix mask
-        #  (don't ask about 1 and 2)
-        return HPMask(config, include_maskgals=include_maskgals, rng=rng)
+    Returns
+    -------
+    maskgals_all: `redmapper.Catalog`
+        All maskgals read from file
+    """
+    if not os.path.isfile(maskgalfile):
+        raise RuntimeError("Could not find maskgalfile %s.  Please run mask.gen_maskgals(maskgalfile)" % (maskgalfile))
+
+    # Check version
+    hdr = fitsio.read_header(maskgalfile, ext=1)
+    if (hdr['version'] != CURRENT_MASKGAL_VERSION):
+        raise RuntimeError("maskgalfile %s is old version.  Please run mask.gen_maskgals(maskgalfile)" % (maskgalfile))
+
+    return Catalog.from_fits_file(maskgalfile)
+
+def select_maskgals_sample(config, maskgals_all, rng, maskgal_index=None):
+    """
+    Select a subset of maskgals by sampling.
+
+    Parameters
+    ----------
+    config: `redmapper.Config`
+        Configuration object
+    maskgals_all: `redmapper.Catalog`
+        All maskgals
+    rng: `np.random.RandomState`
+        Random state to use
+    maskgal_index: `int`, optional
+       Pre-selected index to sample from (for reproducibility).
+       Default is None (select randomly).
+
+    Returns
+    -------
+    maskgals: `redmapper.Catalog`
+        Subset of maskgals
+    maskgal_index: `int`
+        The index used for sampling
+    """
+    if maskgal_index is None:
+        maskgal_index = rng.choice(config['maskgal_nsamples'])
+
+    maskgals = maskgals_all[maskgal_index * config['maskgal_ngals']:
+                           (maskgal_index + 1) * config['maskgal_ngals']]
+
+    return maskgals, maskgal_index
+
+def gen_maskgals(config, maskgalfile, rng=None):
+    """
+    Function to generate the maskgal monte carlo galaxies.
+
+    Parameters
+    ----------
+    config: `redmapper.Config`
+        Configuration object
+    maskgalfile: `str`
+       Name of maskgal file to generate.
+    rng: `np.random.RandomState`, optional
+        Random state to use.
+    """
+    if rng is None:
+        rng = np.random.RandomState(seed=config['randomseed'])
+
+    minrad = np.clip(np.floor(10.*config['percolation_r0'] * (3./100.)**config['percolation_beta']) / 10., None, 0.5)
+    maxrad = np.ceil(10.*config['percolation_r0'] * (300./100.)**config['percolation_beta']) / 10.
+
+    nradbins = np.ceil((maxrad - minrad) / config['maskgal_rad_stepsize']).astype(np.int32) + 1
+    radbins = np.arange(nradbins, dtype=np.float32) * config['maskgal_rad_stepsize'] + minrad
+
+    nmag = config['nmag']
+    ncol = nmag - 1
+
+    ngals = config['maskgal_ngals'] * config['maskgal_nsamples']
+
+    maskgals = Catalog.zeros(ngals, dtype=[('r', 'f4'),
+                                           ('phi', 'f4'),
+                                           ('x', 'f4'),
+                                           ('y', 'f4'),
+                                           ('r_uniform', 'f4'),
+                                           ('x_uniform', 'f4'),
+                                           ('y_uniform', 'f4'),
+                                           ('m', 'f4'),
+                                           ('refmag', 'f4'),
+                                           ('refmag_obs', 'f4'),
+                                           ('refmag_obs_err', 'f4'),
+                                           ('chisq', 'f4'),
+                                           ('cwt', 'f4'),
+                                           ('chisq_pdf', 'f4'),
+                                           ('nfw', 'f4'),
+                                           ('dzred', 'f4'),
+                                           ('zwt', 'f4'),
+                                           ('lumwt', 'f4'),
+                                           ('lum_pdf', 'f4'),
+                                           ('limmag', 'f4'),
+                                           ('limmag_dered', 'f4'),
+                                           ('exptime', 'f4'),
+                                           ('m50', 'f4'),
+                                           ('eff', 'f4'),
+                                           ('w', 'f4'),
+                                           ('theta_r', 'f4', nradbins),
+                                           ('mark', bool),
+                                           ('radbins', 'f4', nradbins),
+                                           ('nin', 'f4', nradbins),
+                                           ('nin_orig', 'f4', nradbins),
+                                           ('zp', 'f4'),
+                                           ('ebv', 'f4'),
+                                           ('extinction', 'f4'),
+                                           ('nsig', 'f4')])
+
+    maskgals['radbins'] = np.tile(radbins, maskgals.size).reshape(maskgals.size, nradbins)
+
+    # Generate chisq
+    maskgals.chisq = sample_from_pdf(chisq_pdf, [0.0, config['chisq_max']],
+                                     config['chisq_max'] / 10000.,
+                                     maskgals.size, rng, k=ncol)
+    # Generate mstar
+    maskgals.m = sample_from_pdf(schechter_pdf,
+                                 [-2.5*np.log10(10.0),
+                                   -2.5*np.log10(config['lval_reference']) + config['maskgal_dmag_extra']],
+                                 0.002, maskgals.size, rng,
+                                 alpha=config['calib_lumfunc_alpha'], mstar=0.0)
+    # Generate nfw(r)
+    maskgals.r = sample_from_pdf(nfw_pdf,
+                                 [0.001, maxrad],
+                                 0.001, maskgals.size, rng, radfactor=True)
+
+    # Generate phi
+    maskgals.phi = 2. * np.pi * rng.random(size=maskgals.size)
+
+    # Precompute x/y
+    maskgals.x = maskgals.r * np.cos(maskgals.phi)
+    maskgals.y = maskgals.r * np.sin(maskgals.phi)
+
+    # And uniform x/y
+    maskgals.r_uniform = config['bkg_local_annuli'][1] * np.sqrt(rng.uniform(size=maskgals.size))
+    theta_new = rng.uniform(size=maskgals.size)*2*np.pi
+    maskgals.x_uniform = maskgals.r_uniform*np.cos(theta_new)
+    maskgals.y_uniform = maskgals.r_uniform*np.sin(theta_new)
+
+    # Compute weights to go with these values
+
+    # Chisq weight
+    maskgals.cwt = chisq_pdf(maskgals.chisq, ncol)
+    maskgals.chisq_pdf = maskgals.cwt
+
+    # Nfw weight
+    maskgals.nfw = nfw_pdf(maskgals.r, radfactor=True)
+
+    # luminosity weight
+
+    # We just choose a reference mstar for the normalization code
+    mstar = 19.0
+    normmag = mstar - 2.5 * np.log10(config['lval_reference'])
+    steps = np.arange(10.0, normmag, 0.01)
+    f = schechter_pdf(steps, alpha=config['calib_lumfunc_alpha'], mstar=mstar)
+    n = scipy.integrate.simpson(y=f, x=steps)
+    maskgals.lum_pdf = schechter_pdf(maskgals.m + mstar, mstar=mstar, alpha=config['calib_lumfunc_alpha'])
+    maskgals.lumwt = maskgals.lum_pdf / n
+
+    # zred weight
+    maskgals.dzred = rng.normal(loc=0.0, scale=config['maskgal_zred_err'], size=maskgals.size)
+    maskgals.zwt = (1. / (np.sqrt(2.*np.pi) * config['maskgal_zred_err'])) * np.exp(-(maskgals.dzred**2.) / (2.*config['maskgal_zred_err']**2.))
+
+    # And we need the radial function for each set of samples
+    for j in range(config['maskgal_nsamples']):
+        indices = np.arange(j * config['maskgal_ngals'],
+                            (j + 1) * config['maskgal_ngals'])
+
+        # Radial function
+        for i, rad in enumerate(radbins):
+            inside, = np.where((maskgals.r[indices] <= rad) &
+                               (maskgals.m[indices] < -2.5*np.log10(config['lval_reference'])))
+            maskgals.nin_orig[indices, i] = inside.size
+
+            if config['rsig'] <= 0.0:
+                theta_r = np.ones(config['maskgal_ngals'])
+            else:
+                theta_r = 0.5 + 0.5*erf((rad - maskgals.r[indices]) / (np.sqrt(2.)*config['rsig']))
+            maskgals.theta_r[indices, i] = theta_r
+
+            inside2, = np.where(maskgals.m[indices] < -2.5*np.log10(config['lval_reference']))
+            maskgals.nin[indices, i] = np.sum(theta_r[inside2], dtype=np.float64)
+
+    if config['more_qa_plots']:
+        import matplotlib.pyplot as plt
+
+        if not os.path.exists(config['plotpath']):
+            os.makedirs(config['plotpath'])
+
+        # Plot spatial distribution
+        fig = plt.figure(figsize=(8, 8))
+        ax = fig.add_subplot(111)
+        # Plot a subset
+        sub = np.random.choice(maskgals.size, size=min(maskgals.size, 10000), replace=False)
+        ax.plot(maskgals.x[sub], maskgals.y[sub], 'k.', markersize=1)
+        ax.set_xlabel('X (Mpc)')
+        ax.set_ylabel('Y (Mpc)')
+        ax.set_title('Maskgals Spatial Distribution')
+        ax.set_aspect('equal')
+        fig.savefig(os.path.join(config['plotpath'], 'maskgals_spatial.png'))
+        plt.close(fig)
+
+        # Plot radial distribution
+        fig = plt.figure(figsize=(8, 6))
+        ax = fig.add_subplot(111)
+        ax.hist(maskgals.r, bins=100, histtype='step')
+        ax.set_xlabel('R (Mpc)')
+        ax.set_title('Maskgals Radial Distribution')
+        fig.savefig(os.path.join(config['plotpath'], 'maskgals_radial.png'))
+        plt.close(fig)
+
+        # Plot magnitude distribution
+        fig = plt.figure(figsize=(8, 6))
+        ax = fig.add_subplot(111)
+        ax.hist(maskgals.m, bins=100, histtype='step')
+        ax.set_xlabel('m - mstar')
+        ax.set_title('Maskgals Magnitude Distribution')
+        fig.savefig(os.path.join(config['plotpath'], 'maskgals_mag.png'))
+        plt.close(fig)
+
+        # Plot chisq distribution
+        fig = plt.figure(figsize=(8, 6))
+        ax = fig.add_subplot(111)
+        ax.hist(maskgals.chisq, bins=100, histtype='step')
+        ax.set_xlabel('Chisq')
+        ax.set_title('Maskgals Chisq Distribution')
+        fig.savefig(os.path.join(config['plotpath'], 'maskgals_chisq.png'))
+        plt.close(fig)
+
+    # And save it
+
+    hdr = fitsio.FITSHDR()
+    hdr['version'] = CURRENT_MASKGAL_VERSION
+    hdr['r0'] = config['percolation_r0']
+    hdr['beta'] = config['percolation_beta']
+    hdr['stepsize'] = config['maskgal_rad_stepsize']
+    hdr['nmag'] = config['nmag']
+    hdr['ngals'] = config['maskgal_ngals']
+    hdr['chisqmax'] = config['chisq_max']
+    hdr['lvalref'] = config['lval_reference']
+    hdr['extra'] = config['maskgal_dmag_extra']
+    hdr['alpha'] = config['calib_lumfunc_alpha']
+    hdr['rsig'] = config['rsig']
+    hdr['zrederr'] = config['maskgal_zred_err']
+
+    maskgals.to_fits_file(maskgalfile, clobber=True, header=hdr)
+
+def read_mask(config, covpixels=None):
+    """
+    Read mask data from config.
+
+    Parameters
+    ----------
+    config: `redmapper.Config`
+        Configuration object
+    covpixels: `np.array`, optional
+        Coverage pixels to read. Default is None (read all).
+
+    Returns
+    -------
+    mask_data: `healsparse.HealSparseMap` or None
+        Mask data (None if mask_mode == 0)
+    """
+    if config['mask_mode'] == 0:
+        return None
+    
+    if config['mask_mode'] == 3:
+        maskfile = config['maskfile']
+        hdr = fitsio.read_header(maskfile, ext=1)
+        if 'PIXTYPE' not in hdr or hdr['PIXTYPE'] != 'HEALSPARSE':
+            raise RuntimeError("Need to specify mask in healsparse format.  See redmapper_convert_mask_to_healsparse.py")
+
+        if covpixels is None and len(config['hpix']) > 0:
+            cov_hdr = fitsio.read_header(maskfile, ext='COV')
+            nside_coverage = cov_hdr['NSIDE']
+            covpixels = get_healsparse_subpix_indices(config['nside'], config['hpix'],
+                                                      config['border'], nside_coverage)
+        
+        return healsparse.HealSparseMap.read(maskfile, pixels=covpixels)
+    
+    raise ValueError("Unsupported mask_mode: %d" % config['mask_mode'])
+
+def get_mask_values(mask_data, ra, dec, rng=None, config=None):
+    """
+    Compute the geometric mask values at a list of positions.
+
+    Parameters
+    ----------
+    mask_data: `healsparse.HealSparseMap` or None
+        Mask data
+    ra: `np.array`
+       Float array of right ascensions
+    dec: `np.array`
+       Float array of declinations
+    rng: `np.random.RandomState`, optional
+        Random state for stochastic mask application. Default is None.
+    config: `redmapper.Config`, optional
+        Configuration object (used for random seed if rng is None). Default is None.
+
+    Returns
+    -------
+    maskvals: `np.array`
+       Bool array of True ("in the footprint") for each ra/dec.
+    """
+    _ra = np.atleast_1d(ra)
+    _dec = np.atleast_1d(dec)
+
+    if (_ra.size != _dec.size):
+        raise ValueError("ra, dec must be same length")
+
+    if mask_data is None:
+        return np.ones(_ra.size, dtype=bool)
+
+    gd, = np.where(np.abs(_dec) < 90.0)
+    fracgood = np.zeros(_ra.size, dtype=np.float64)
+    fracgood[gd] = mask_data.get_values_pos(_ra[gd], _dec[gd], lonlat=True)
+
+    if rng is None:
+        if config is not None:
+            rng = np.random.RandomState(seed=config['randomseed'])
+        else:
+            rng = np.random.RandomState()
+
+    radmask = np.zeros(_ra.size, dtype=bool)
+    radmask[np.where(fracgood > rng.rand(_ra.size))] = True
+    return radmask
+
+def compute_maskgals_mark(mask_data, cluster, maskgals, rng=None, config=None):
+    """
+    Compute mark values for maskgals for a given cluster.
+
+    Parameters
+    ----------
+    mask_data: `healsparse.HealSparseMap` or None
+        Mask data
+    cluster: `redmapper.Cluster`
+        Cluster object
+    maskgals: `redmapper.Catalog`
+        Maskgals catalog
+    rng: `np.random.RandomState`, optional
+        Random state
+    config: `redmapper.Config`, optional
+        Configuration object
+
+    Returns
+    -------
+    mark: `np.array`
+        Boolean array of mark values
+    """
+    ras = cluster.ra + maskgals.x/(cluster.mpc_scale)/np.cos(np.radians(cluster.dec))
+    decs = cluster.dec + maskgals.y/(cluster.mpc_scale)
+    return get_mask_values(mask_data, ras, decs, rng=rng, config=config)
+
+def calc_maskcorr(maskgals, mstar, maxmag, limmag, rng):
+    """
+    Calculate mask correction cpars, a third-order polynomial which describes the
+    mask fraction of a cluster as a function of radius.
+
+    Parameters
+    ----------
+    maskgals: `redmapper.Catalog`
+        Maskgals catalog
+    mstar: `float`
+       mstar (mag) at cluster redshift
+    maxmag: `float`
+       maximum magnitude for use in luminosity function filter
+    limmag: `float`
+       Survey or local limiting magnitude
+    rng: `np.random.RandomState`
+        Random state
+
+    Returns
+    -------
+    cpars: `np.array`
+       Third-order polynomial parameters describing maskfrac as function of radius
+    """
+    mag_in = maskgals.m + mstar
+    maskgals.refmag = mag_in
+
+    if maskgals.limmag[0] > 0.0:
+        mag, mag_err = apply_errormodels(maskgals, mag_in, rng=rng)
+
+        maskgals.refmag_obs = mag
+        maskgals.refmag_obs_err = mag_err
+    else:
+        mag = mag_in
+        mag_err = 0*mag_in
+        raise ValueError('Survey limiting magnitude <= 0!')
+
+    if (maskgals.w[0] < 0) or (maskgals.w[0] == 0 and
+            np.amax(maskgals.m50) == 0):
+        theta_i = calc_theta_i(mag, mag_err, maxmag, limmag)
+    elif (maskgals.w[0] == 0):
+        theta_i = calc_theta_i(mag, mag_err, maxmag, maskgals.m50)
+    else:
+        raise Exception('Unsupported mode!')
+
+    p_det = theta_i*maskgals.mark
+    c = 1 - np.dot(p_det, maskgals.theta_r) / maskgals.nin[0]
+
+    cpars = np.polyfit(maskgals.radbins[0], c, 3)
+
+    return cpars
 
 def convert_maskfile_to_healsparse(maskfile, healsparsefile, nsideCoverage, clobber=False):
     """
@@ -496,7 +445,6 @@ def convert_maskfile_to_healsparse(maskfile, healsparsefile, nsideCoverage, clob
     clobber: `bool`, optional
        Clobber existing healsparse file?  Default is false.
     """
-
     old_mask, old_hdr = fitsio.read(maskfile, ext=1, header=True, lower=True)
 
     nside = old_hdr['nside']
@@ -506,3 +454,40 @@ def convert_maskfile_to_healsparse(maskfile, healsparsefile, nsideCoverage, clob
 
     sparseMap.write(healsparsefile, clobber=clobber)
 
+def get_mask(config, include_maskgals=True, rng=None):
+    """
+    Convenience function to look at a config file and load the appropriate type of mask.
+
+    Parameters
+    ----------
+    config: `redmapper.Config`
+       Configuration object
+    include_maskgals : `bool`, optional
+        Include maskgals in the mask?
+    rng : `np.random.RandomState`, optional
+        Use this RandomState?
+
+    Returns
+    -------
+    mask: `dict`
+        Dictionary containing mask data and metadata
+    """
+    if rng is None:
+        rng = np.random.RandomState(seed=config['randomseed'])
+
+    mask_data = read_mask(config)
+    maskgals_all = None
+    if include_maskgals:
+        maskgals_all = read_maskgals(config['maskgalfile'])
+
+    mask = {
+        'mask_data': mask_data,
+        'maskgals_all': maskgals_all,
+        'maskgals': None,
+        'maskgal_index': -1,
+        'rng': rng,
+        'config': config,
+        'nside': mask_data.nside_sparse if mask_data is not None else -1
+    }
+
+    return mask

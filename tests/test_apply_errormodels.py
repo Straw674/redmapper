@@ -4,7 +4,7 @@ import numpy as np
 import fitsio
 from numpy import random
 
-from redmapper import HPMask
+from redmapper.mask import get_mask, select_maskgals_sample
 from redmapper import Configuration
 from redmapper.utilities import apply_errormodels
 
@@ -22,20 +22,20 @@ class ApplyErrormodelsTestCase(unittest.TestCase):
 
         rng = np.random.RandomState(12345)
 
-        mask = HPMask(config) #Create the mask
-        maskgal_index = mask.select_maskgals_sample()
+        mask = get_mask(config) #Create the mask
+        mask['maskgals'], mask['maskgal_index'] = select_maskgals_sample(config, mask['maskgals_all'], mask['rng'])
 
         #set all the necessary inputs from test file
-        mask.maskgals.exptime = 100.
-        mask.maskgals.limmag  = 20.
-        mask.maskgals.zp[0]   = 22.5
-        mask.maskgals.nsig[0] = 10.
-        #necessary as mask.maskgals.exptime has shape (6000,)
+        mask['maskgals'].exptime = 100.
+        mask['maskgals'].limmag  = 20.
+        mask['maskgals'].zp[0]   = 22.5
+        mask['maskgals'].nsig[0] = 10.
+        #necessary as mask['maskgals'].exptime has shape (6000,)
         mag_in                = np.full(6000, 1, dtype = float)
         mag_in[:6]            = np.array([16., 17., 18., 19., 20., 21.])
 
         #test without noise
-        mag, mag_err = apply_errormodels(mask.maskgals, mag_in, nonoise=True, rng=rng)
+        mag, mag_err = apply_errormodels(mask['maskgals'], mag_in, nonoise=True, rng=rng)
         idx = np.array([0, 1, 2, 3, 4, 5])
         mag_idl     = np.array([16., 17., 18., 19., 20., 21.])
         mag_err_idl = np.array([0.00602535, 0.0107989, 0.0212915, 0.0463765, 0.108574, 0.264390])
@@ -43,7 +43,7 @@ class ApplyErrormodelsTestCase(unittest.TestCase):
         testing.assert_almost_equal(mag_err[idx], mag_err_idl, decimal = 6)
 
         # Test with noise.
-        mag, mag_err = apply_errormodels(mask.maskgals, mag_in, rng=rng)
+        mag, mag_err = apply_errormodels(mask['maskgals'], mag_in, rng=rng)
 
         idx = np.array([0, 1, 2, 3, 4, 5, 1257, 2333, 3876])
         mag_test = np.array([16.00123414, 16.99484023, 18.01111633,

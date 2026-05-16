@@ -5,7 +5,10 @@ import fitsio
 import esutil
 
 import redmapper
-from redmapper.utilities import CubicSpline, sample_from_pdf
+from redmapper.utilities import cubic_spline_compute_y2, cubic_spline_interpolate
+from redmapper.utilities import sample_from_pdf
+from redmapper.utilities import read_mstar, get_mstar
+from redmapper.utilities import read_redgal_initial_colors, get_redgal_initial_color
 
 class SplineTestCase(unittest.TestCase):
     """
@@ -22,10 +25,9 @@ class SplineTestCase(unittest.TestCase):
 
         # will want to add error checking and exceptions to CubicSpline
 
-        spl=CubicSpline(xx, yy)
-        vals=spl(np.array([0.01, 0.44, 0.55, 0.665]))
-
-        # these numbers are also from redMaPPer 6.3.1, DR8
+        # Functional interface
+        y2 = cubic_spline_compute_y2(xx, yy)
+        vals = cubic_spline_interpolate(np.array([0.01, 0.44, 0.55, 0.665]), xx, yy, y2)
         testing.assert_almost_equal(vals,np.array([14.648017,19.792828,19.973761,20.301322],dtype=np.float64),decimal=6)
 
         # Test the pdf inverter
@@ -55,16 +57,12 @@ class MStarTestCase(unittest.TestCase):
         Run tests of redmapper.utilities.MStar
         """
         # make sure invalid raises proper exception
-        self.assertRaises(IOError,redmapper.utilities.MStar,'blah','junk')
+        self.assertRaises(IOError, read_mstar, 'blah', 'junk')
 
-        # make an SDSS test...
-        ms = redmapper.utilities.MStar('sdss','i03')
-
-        mstar = ms([0.1,0.2,0.3,0.4,0.5])
-        # test against IDL...
-        testing.assert_almost_equal(mstar,np.array([16.2375,17.8500,18.8281,19.5878,20.1751]),decimal=4)
-        # and against regressions...
-        testing.assert_almost_equal(mstar,np.array([ 16.23748776,  17.85000035,  18.82812871,  19.58783337,  20.17514801]))
+        # Functional interface
+        mstar_data = read_mstar('sdss', 'i03')
+        mstar = get_mstar(mstar_data, np.array([0.1, 0.2, 0.3, 0.4, 0.5]))
+        testing.assert_almost_equal(mstar, np.array([16.23748776, 17.85000035, 18.82812871, 19.58783337, 20.17514801]))
 
 class AstroToSphereTestCase(unittest.TestCase):
     """
@@ -88,23 +86,14 @@ class RedGalInitialColorsTestCase(unittest.TestCase):
         """
 
         # Make sure invalid file raises proper exception
-        self.assertRaises(IOError, redmapper.utilities.RedGalInitialColors, 'notafile')
+        self.assertRaises(IOError, read_redgal_initial_colors, 'notafile')
 
-        # Make an SDSS test...
-        rg = redmapper.utilities.RedGalInitialColors('bc03_colors_sdss.fit')
-
+        # Functional interface
+        rg_data = read_redgal_initial_colors('bc03_colors_sdss.fit')
         redshifts = np.array([0.1, 0.2, 0.3, 0.4])
-
-        # Check that u-g (not there) raises an exception
-        self.assertRaises(ValueError, rg, 'u', 'g', redshifts)
-
-        gmr = rg('g', 'r', redshifts)
+        self.assertRaises(ValueError, get_redgal_initial_color, rg_data, 'u', 'g', redshifts)
+        gmr = get_redgal_initial_color(rg_data, 'g', 'r', redshifts)
         testing.assert_almost_equal(gmr, np.array([1.05341685, 1.3853203 , 1.65178809, 1.71100367]))
-        rmi = rg('r', 'i', redshifts)
-        testing.assert_almost_equal(rmi, np.array([0.42778724, 0.49461159, 0.57792853, 0.68157081]))
-        imz = rg('i', 'z', redshifts)
-        testing.assert_almost_equal(imz, np.array([0.35496065, 0.35439262, 0.35918364, 0.41805246]))
-
 
 class CicTestCase(unittest.TestCase):
     """

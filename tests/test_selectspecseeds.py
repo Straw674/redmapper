@@ -15,29 +15,38 @@ import esutil
 
 from redmapper import Configuration
 from redmapper import GalaxyCatalog
-from redmapper.calibration import SelectSpecSeeds
 from redmapper import Catalog
 
 class SelectSpecSeedsTestCase(unittest.TestCase):
     """
     Tests for creating spectroscopic seeds for a run in
-    redmapper.calibration.SelectSpecSeeds
+    redmapper.calibration.selectspecseeds.select_spec_seeds_wrapper
     """
 
     def test_selectspecseeds(self):
         """
-        Run tests on redmapper.calibration.SelectSpecSeeds
+        Run tests on redmapper.calibration.selectspecseeds.select_spec_seeds_wrapper
         """
         file_path = 'data_for_tests'
         configfile = 'testconfig.yaml'
 
         config = Configuration(os.path.join(file_path, configfile))
+        config.galfile = os.path.join(file_path, 'test_dr8_trainred_gals.fit')
+        config.specfile_train = os.path.join(file_path, 'test_dr8_trainred_spec.fit')
 
         self.test_dir = tempfile.mkdtemp(dir='./', prefix='TestRedmapper-')
         config.outpath = self.test_dir
+        config.seedfile = os.path.join(self.test_dir, 'test_seeds.fit')
 
-        # Put in tests here...
-        ## FIXME
+        from redmapper.calibration.selectspecseeds import select_spec_seeds_wrapper
+        select_spec_seeds_wrapper(config, usetrain=True)
+
+        self.assertTrue(os.path.isfile(config.seedfile))
+        seeds = Catalog.from_fits_file(config.seedfile)
+        self.assertGreater(seeds.size, 0)
+        self.assertIn('zspec', seeds.colnames)
+        self.assertIn('zred', seeds.colnames)
+
 
     def setUp(self):
         self.test_dir = None

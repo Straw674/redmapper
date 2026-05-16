@@ -9,3 +9,5 @@ redmapper.egg-info
 
 redmapper/_version.py
 .vscode/settings.json
+/.agents
+/archive

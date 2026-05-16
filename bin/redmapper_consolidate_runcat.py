@@ -27,5 +27,4 @@ if __name__ == '__main__':
         consolidate_members = True
         cattype = 'runcat'
 
-    consolidate = redmapper.pipeline.RuncatConsolidateTask(args.configfile)
-    consolidate.run(do_plots=do_plots, match_spec=match_spec, consolidate_members=consolidate_members, cattype=cattype)
+    redmapper.pipeline.run_runcat_consolidate_task(args.configfile, do_plots=do_plots, match_spec=match_spec, consolidate_members=consolidate_members, cattype=cattype)

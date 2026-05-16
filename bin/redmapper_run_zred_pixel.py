@@ -21,6 +21,4 @@ if __name__ == '__main__':
 
     args = parser.parse_args()
 
-    runZredPixelTask = redmapper.pipeline.RunZredPixelTask(args.configfile, args.pixel, args.nside, path=args.path)
-    runZredPixelTask.run()
-
+    redmapper.pipeline.run_zred_pixel_task(args.configfile, args.pixel, args.nside, path=args.path)

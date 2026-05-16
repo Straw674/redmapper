@@ -7,11 +7,11 @@ from numpy import random
 
 from redmapper import Configuration
 from redmapper import GalaxyCatalog
-from redmapper import HPMask
-from redmapper import DepthMap
-from redmapper import ColorBackground
+from redmapper.mask import get_mask, select_maskgals_sample, compute_maskgals_mark
+from redmapper import depthmap
+from redmapper import read_color_background
 from redmapper import Cluster
-from redmapper import RedSequenceColorPar
+from redmapper import read_redsequence
 
 class ClusterFitTestCase(unittest.TestCase):
     """
@@ -37,8 +37,8 @@ class ClusterFitTestCase(unittest.TestCase):
 
         st = np.argsort(r[use])
 
-        cbkg = ColorBackground(config.bkgfile_color, usehdrarea=True)
-        zredstr = RedSequenceColorPar(None, config=config)
+        cbkg = read_color_background(config.bkgfile_color, usehdrarea=True)
+        zredstr = read_redsequence(None, config=config)
 
         cluster = Cluster(r0=0.5, beta=0.0, config=config, cbkg=cbkg, neighbors=gals[use[st]], zredstr=zredstr)
         cluster.ra = 142.12752
@@ -46,11 +46,11 @@ class ClusterFitTestCase(unittest.TestCase):
         cluster.redshift = 0.227865
         cluster.update_neighbors_dist()
 
-        mask = HPMask(cluster.config, rng=rng)
-        maskgal_index = mask.select_maskgals_sample(maskgal_index=0)
-        depthstr = DepthMap(cluster.config)
-        mask.set_radmask(cluster)
-        depthstr.calc_maskdepth(mask.maskgals, cluster.ra, cluster.dec, cluster.mpc_scale)
+        mask = get_mask(cluster.config, rng=rng)
+        mask['maskgals'], mask['maskgal_index'] = select_maskgals_sample(cluster.config, mask['maskgals_all'], mask['rng'], maskgal_index=0)
+        depth_data = depthmap.read_depth_map(cluster.config)
+        mask['maskgals'].mark = compute_maskgals_mark(mask['mask_data'], cluster, mask['maskgals'], rng=mask['rng'], config=cluster.config)
+        depthmap.compute_maskdepth(depth_data, mask['maskgals'], cluster.ra, cluster.dec, cluster.mpc_scale)
 
         lam = cluster.calc_richness_fit(mask, 1, centcolor_in=1.36503, calc_err=False)
         testing.assert_almost_equal(lam, 16.26602, decimal=5)

@@ -24,6 +24,19 @@ import warnings
 TOTAL_SQDEG = 4 * 180**2 / np.pi
 SEC_PER_DEG = 3600
 
+def decode_string(s):
+    """
+    Decode a string/bytes object safely for Python 3.
+
+    Parameters
+    ----------
+    s: `str` or `bytes`
+       String or bytes to decode.
+    """
+    if hasattr(s, 'decode'):
+        return s.decode().rstrip()
+    return s.rstrip() if hasattr(s, 'rstrip') else s
+
 def astro_to_sphere(ra, dec):
     """
     Convert astronomical ra/dec to healpix theta, phi coordinates.
@@ -175,261 +188,229 @@ def nfw_pdf(x, rscale=0.15, corer=0.1, radfactor=False):
 
 
 
-######################################
-## mstar LUT code
-######################################
-class MStar(object):
+def cubic_spline_compute_y2(x, y, yp=None):
     """
-    Class to describe the MStar(z) look-up table.
+    Compute the second derivatives for a cubic spline.
+
+    Parameters
+    ----------
+    x: `np.array`
+       Float array of node positions
+    y: `np.array`
+       Float array of node values
+    yp: `str` or `list`, optional
+       Type of spline. Default is None, which is "natural".
+
+    Returns
+    -------
+    y2: `np.array`
+       Float array of second derivatives at nodes.
     """
+    npts = len(x)
+    mat = np.zeros((3, npts))
+    # enforce continuity of 1st derivatives
+    mat[1,1:-1] = (x[2:  ]-x[0:-2])/3.
+    mat[2,0:-2] = (x[1:-1]-x[0:-2])/6.
+    mat[0,2:  ] = (x[2:  ]-x[1:-1])/6.
+    bb = np.zeros(npts)
+    bb[1:-1] = ((y[2:  ]-y[1:-1])/(x[2:  ]-x[1:-1]) -
+                (y[1:-1]-y[0:-2])/(x[1:-1]-x[0:-2]))
+    if yp is None: # natural cubic spline
+        mat[1,0] = 1.
+        mat[1,-1] = 1.
+        bb[0] = 0.
+        bb[-1] = 0.
+    elif yp == '3d=0':
+        mat[1, 0] = -1./(x[1]-x[0])
+        mat[0, 1] =  1./(x[1]-x[0])
+        mat[1,-1] =  1./(x[-2]-x[-1])
+        mat[2,-2] = -1./(x[-2]-x[-1])
+        bb[ 0] = 0.
+        bb[-1] = 0.
+    else:
+        mat[1, 0] = -1./3.*(x[1]-x[0])
+        mat[0, 1] = -1./6.*(x[1]-x[0])
+        mat[2,-2] =  1./6.*(x[-1]-x[-2])
+        mat[1,-1] =  1./3.*(x[-1]-x[-2])
+        bb[ 0] = yp[0]-1.*(y[ 1]-y[ 0])/(x[ 1]-x[ 0])
+        bb[-1] = yp[1]-1.*(y[-1]-y[-2])/(x[-1]-x[-2])
+    y2 = solve_banded((1,1), mat, bb)
+    return y2
 
-    def __init__(self, survey, band):
-        """
-        Instantiate a MStar object.
-
-        Parameters
-        ----------
-        survey: `str`
-           Name of survey to get mstar look-up table
-        band: `str`
-           Name of band to get mstar look-up table
-        """
-        self.survey = survey.strip()
-        self.band = band.strip()
-
-        ref = resources.files("redmapper").joinpath("data/mstar/mstar_%s_%s.fit" % (self.survey, self.band))
-        with resources.as_file(ref) as f:
-            self.mstar_file = f.as_posix()
-
-        self._mstar_arr = fitsio.read(self.mstar_file, ext=1, upper=True)
-
-        self._f = CubicSpline(self._mstar_arr['Z'],self._mstar_arr['MSTAR'])
-
-    def __call__(self, z):
-        """
-        Return mstar at redshifts z.
-
-        Parameters
-        ----------
-        z: `np.array`
-           Float array of redshifts
-
-        Returns
-        -------
-        mstar: `np.array`
-           mstar at redshifts z
-        """
-        # may want to check the type ... if it's a scalar, return scalar?  TBD
-        return self._f(z)
-
-
-#############################################
-## redgal initialization LUT code
-#############################################
-
-class RedGalInitialColors(object):
+def cubic_spline_interpolate(x_eval, x, y, y2, fixextrap=False):
     """
-    Class to describe the RedGalInitialColors(z, color) look-up table.
+    Compute cubic spline interpolation.
+
+    Parameters
+    ----------
+    x_eval: `np.array`
+       Float array of x values to compute interpolation
+    x: `np.array`
+       Float array of node positions
+    y: `np.array`
+       Float array of node values
+    y2: `np.array`
+       Float array of second derivatives at nodes
+    fixextrap: `bool`, optional
+       Fix the extrapolation at the end of the node positions.
+       Default is False.
+
+    Returns
+    -------
+    y_eval: `np.array`
+       Spline interpolated values at x_eval
     """
+    npts = len(x)
+    lo = np.searchsorted(x, x_eval)-1
+    lo = np.clip(lo, 0, npts-2)
+    hi = lo + 1
+    dx = x[hi] - x[lo]
+    a = (x[hi] - x_eval)/dx
+    b = (x_eval-x[lo])/dx
+    vals = (a*y[lo]+b*y[hi]+
+            ((a**3-a)*y2[lo]+(b**3-b)*y2[hi])*dx**2./6.)
 
-    def __init__(self, redgal_template):
-        """
-        Instantiate a RedGalInitialColors object.
-
-        Parameters
-        ----------
-        redgal_template: `str`
-           Name of redgal_template file to get look-up table.
-        """
-
-        from . import Catalog
-
-        self._template_file = None
-
-        ref = resources.files("redmapper").joinpath("data/initcolors/%s" % (redgal_template))
-        with resources.as_file(ref) as f:
-            self._template_file = f.as_posix()
-
-        if not os.path.isfile(self._template_file):
-            self._template_file = os.path.abspath(redgal_template)
-
-        if not os.path.isfile(self._template_file):
-            raise IOError("Could not find redgal_template file %s in resource or path." % (redgal_template))
-
-        self._template = Catalog.from_fits_file(self._template_file, ext=1)
-        template_hdr = fitsio.read_header(self._template_file, ext=1)
-
-        if ',' in template_hdr['BANDS']:
-            self._template_bands = template_hdr['BANDS'].rstrip().split(',')
-        else:
-            self._template_bands = list(template_hdr['BANDS'].rstrip())
-
-        self._color_names = []
-        for i in range(len(self._template_bands) - 1):
-            self._color_names.append(self._color_name(self._template_bands[i],
-                                                      self._template_bands[i + 1]))
-
-    @property
-    def zmax(self):
-        return self._template.z.max()
-
-    def __call__(self, band1, band2, z):
-        """
-        Return the initial color guess (band1 - band2) at redshift z.
-
-        Parameters
-        ----------
-        band1: `str`
-           The first band in the color
-        band2: `str`
-           The second band in the color
-        z: `np.array`
-           Float array of redshifts
-
-        Returns
-        -------
-        color: `np.array`
-           Initial red galaxy color at redshifts z
-        """
-
-        name = self._color_name(band1, band2)
-        if name not in self._color_names:
-            raise ValueError("Color %s-%s not in initial template file %s." % (band1, band2,
-                                                                               self._template_file))
-
-        index = self._color_names.index(name)
-        return interpol(self._template.color[:, index], self._template.z, z)
-
-    def _color_name(self, band1, band2):
-        """
-        Return the color name associated with two bands.
-
-        Parameters
-        ----------
-        band1: `str`
-           The first band in the color
-        band2: `str`
-           The second band in the color
-
-        Returns
-        -------
-        colorname: `str`
-           Name of the color to use as a key.
-        """
-
-        name = '%s-%s' % (band1.upper(), band2.upper())
-        return name
-
-
-#############################################################
-## cubic spline interpolation, based on Eddie Schlafly's code, from NumRec
-##   http://faun.rc.fas.harvard.edu/eschlafly/apored/cubicspline.py
-#############################################################
-class CubicSpline(object):
-    """
-    CubicSpline interpolation class.
-    """
-    def __init__(self, x, y, yp=None, fixextrap=False):
-        """
-        Instantiate a CubicSpline object.
-
-        Parameters
-        ----------
-        x: `np.array`
-           Float array of node positions
-        y: `np.array`
-           Float array of node values
-        yp: `str`
-           Type of spline.  Default is None, which is "natural"
-        fixextrap: `bool`, optional
-           Fix the extrapolation at the end of the node positions.
-           Default is False.
-        """
-        npts = len(x)
-        mat = np.zeros((3, npts))
-        # enforce continuity of 1st derivatives
-        mat[1,1:-1] = (x[2:  ]-x[0:-2])/3.
-        mat[2,0:-2] = (x[1:-1]-x[0:-2])/6.
-        mat[0,2:  ] = (x[2:  ]-x[1:-1])/6.
-        bb = np.zeros(npts)
-        bb[1:-1] = ((y[2:  ]-y[1:-1])/(x[2:  ]-x[1:-1]) -
-                    (y[1:-1]-y[0:-2])/(x[1:-1]-x[0:-2]))
-        if yp is None: # natural cubic spline
-            mat[1,0] = 1.
-            mat[1,-1] = 1.
-            bb[0] = 0.
-            bb[-1] = 0.
-        elif yp == '3d=0':
-            mat[1, 0] = -1./(x[1]-x[0])
-            mat[0, 1] =  1./(x[1]-x[0])
-            mat[1,-1] =  1./(x[-2]-x[-1])
-            mat[2,-2] = -1./(x[-2]-x[-1])
-            bb[ 0] = 0.
-            bb[-1] = 0.
-        else:
-            mat[1, 0] = -1./3.*(x[1]-x[0])
-            mat[0, 1] = -1./6.*(x[1]-x[0])
-            mat[2,-2] =  1./6.*(x[-1]-x[-2])
-            mat[1,-1] =  1./3.*(x[-1]-x[-2])
-            bb[ 0] = yp[0]-1.*(y[ 1]-y[ 0])/(x[ 1]-x[ 0])
-            bb[-1] = yp[1]-1.*(y[-1]-y[-2])/(x[-1]-x[-2])
-        y2 = solve_banded((1,1), mat, bb)
-        self.x, self.y, self.y2 = (x, y, y2)
-
-        self.fixextrap = fixextrap
-
-    def splint(self,x):
-        """
-        Compute spline interpolation.
-
-        Parameters
-        ----------
-        x: `np.array`
-           Float array of x values to compute interpolation
-
-        Returns
-        -------
-        y: `np.array`
-           Spline interpolated values at x
-        """
-        npts = len(self.x)
-        lo = np.searchsorted(self.x, x)-1
-        lo = np.clip(lo, 0, npts-2)
-        hi = lo + 1
-        dx = self.x[hi] - self.x[lo]
-        a = (self.x[hi] - x)/dx
-        b = (x-self.x[lo])/dx
-        y = (a*self.y[lo]+b*self.y[hi]+
-             ((a**3-a)*self.y2[lo]+(b**3-b)*self.y2[hi])*dx**2./6.)
-        return y
-
-    def __call__(self, x):
-        """
-        Compute spline interpolation.
-
-        Parameters
-        ----------
-        x: `np.array`
-           Float array of x values to compute interpolation
-
-        Returns
-        -------
-        y: `np.array`
-           Spline interpolated values at x
-        """
-
-        if not self.fixextrap:
-            return self.splint(x)
-        else:
-            vals = self.splint(x)
-
-            lo, = np.where(x < self.x[0])
-            vals[lo] = self.y[0]
-
-            hi, = np.where(x > self.x[-1])
-            vals[hi] = self.y[-1]
-
+    if fixextrap:
+        if np.isscalar(x_eval):
+            if x_eval < x[0]:
+                return y[0]
+            if x_eval > x[-1]:
+                return y[-1]
             return vals
+
+        lo_extrap, = np.where(x_eval < x[0])
+        vals[lo_extrap] = y[0]
+
+        hi_extrap, = np.where(x_eval > x[-1])
+        vals[hi_extrap] = y[-1]
+
+    return vals
+
+def read_mstar(survey, band):
+    """
+    Read the MStar(z) look-up table.
+
+    Parameters
+    ----------
+    survey: `str`
+       Name of survey to get mstar look-up table
+    band: `str`
+       Name of band to get mstar look-up table
+
+    Returns
+    -------
+    mstar_data: `dict`
+       Dictionary containing mstar data and spline coefficients.
+    """
+    survey = survey.strip()
+    band = band.strip()
+
+    ref = resources.files("redmapper").joinpath("data/mstar/mstar_%s_%s.fit" % (survey, band))
+    with resources.as_file(ref) as f:
+        mstar_file = f.as_posix()
+
+    if not os.path.isfile(mstar_file):
+        raise IOError("Could not find mstar file %s" % (mstar_file))
+
+    mstar_arr = fitsio.read(mstar_file, ext=1, upper=True)
+    y2 = cubic_spline_compute_y2(mstar_arr['Z'], mstar_arr['MSTAR'])
+
+    return {
+        'z': mstar_arr['Z'],
+        'mstar': mstar_arr['MSTAR'],
+        'y2': y2
+    }
+
+def get_mstar(mstar_data, z):
+    """
+    Return mstar at redshifts z.
+
+    Parameters
+    ----------
+    mstar_data: `dict`
+       Dictionary containing mstar data and spline coefficients.
+    z: `np.array`
+       Float array of redshifts
+
+    Returns
+    -------
+    mstar: `np.array`
+       mstar at redshifts z
+    """
+    return cubic_spline_interpolate(z, mstar_data['z'], mstar_data['mstar'], mstar_data['y2'])
+
+def read_redgal_initial_colors(redgal_template):
+    """
+    Read the RedGalInitialColors look-up table.
+
+    Parameters
+    ----------
+    redgal_template: `str`
+       Name of redgal_template file to get look-up table.
+
+    Returns
+    -------
+    redgal_data: `dict`
+       Dictionary containing redgal template data.
+    """
+    from .catalog import Catalog
+
+    ref = resources.files("redmapper").joinpath("data/initcolors/%s" % (redgal_template))
+    with resources.as_file(ref) as f:
+        template_file = f.as_posix()
+
+    if not os.path.isfile(template_file):
+        template_file = os.path.abspath(redgal_template)
+
+    if not os.path.isfile(template_file):
+        raise IOError("Could not find redgal_template file %s in resource or path." % (redgal_template))
+
+    template = Catalog.from_fits_file(template_file, ext=1)
+    template_hdr = fitsio.read_header(template_file, ext=1)
+
+    if ',' in template_hdr['BANDS']:
+        template_bands = template_hdr['BANDS'].rstrip().split(',')
+    else:
+        template_bands = list(template_hdr['BANDS'].rstrip())
+
+    color_names = []
+    for i in range(len(template_bands) - 1):
+        color_names.append('%s-%s' % (template_bands[i].upper(), template_bands[i+1].upper()))
+
+    return {
+        'z': template.z,
+        'color': template.color,
+        'bands': template_bands,
+        'color_names': color_names,
+        'template_file': template_file
+    }
+
+def get_redgal_initial_color(redgal_data, band1, band2, z):
+    """
+    Return the initial color guess (band1 - band2) at redshift z.
+
+    Parameters
+    ----------
+    redgal_data: `dict`
+       Dictionary containing redgal template data.
+    band1: `str`
+       The first band in the color
+    band2: `str`
+       The second band in the color
+    z: `np.array`
+       Float array of redshifts
+
+    Returns
+    -------
+    color: `np.array`
+       Initial red galaxy color at redshifts z
+    """
+    name = '%s-%s' % (band1.upper(), band2.upper())
+    if name not in redgal_data['color_names']:
+        raise ValueError("Color %s not in initial template file %s." % (name, redgal_data['template_file']))
+
+    index = redgal_data['color_names'].index(name)
+    return interpol(redgal_data['color'][:, index], redgal_data['z'], z)
 
 def calc_theta_i(mag, mag_err, maxmag, limmag):
     """
@@ -934,10 +915,10 @@ def _pickle_method(m):
     -------
     attr: Attributes to pickle?
     """
-    if m.im_self is None:
-        return getattr, (m.im_class, m.im_func.func_name)
+    if m.__self__ is None:
+        return getattr, (m.__class__, m.__func__.__name__)
     else:
-        return getattr, (m.im_self, m.im_func.func_name)
+        return getattr, (m.__self__, m.__func__.__name__)
 
 
 def histoGauss(ax, array):

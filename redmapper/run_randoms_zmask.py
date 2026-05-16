@@ -1,4 +1,4 @@
-"""Class to run the redmapper randoms using zmask randoms.
+"""Function to run the redmapper randoms using zmask randoms.
 """
 import fitsio
 import numpy as np
@@ -7,139 +7,97 @@ import os
 
 from .cluster import ClusterCatalog
 from .catalog import Catalog
-from .background import Background
-from .mask import HPMask
+from .background import read_background
+from .mask import get_mask, calc_maskcorr
 from .galaxy import GalaxyCatalog
 from .randoms import RandomCatalog
 from .cluster import Cluster
-from .depthmap import DepthMap
-from .cluster_runner import ClusterRunner
+from .cluster_runner import run_cluster_pipeline, output_cluster_catalog, generate_mem_match_ids, reset_bad_values
+from .configuration import Configuration
 
-###################################################
-# Order of operations:
-#  __init__()
-#    _additional_initialization() [override this]
-#  run()
-#    _setup()
-#    _more_setup() [override this]
-#    _process_cluster() [override this]
-#    _postprocess() [override this]
-#  output()
-###################################################
+def _randoms_more_setup(state, **kwargs):
+    config = state['config']
+    incat = RandomCatalog.from_randfile(config.randfile,
+                                        nside=config.nside,
+                                        hpix=config.hpix,
+                                        border=config.border)
 
-class RunRandomsZmask(ClusterRunner):
+    dtype = [('MEM_MATCH_ID', 'i4'),
+             ('RA', 'f8'),
+             ('DEC', 'f8'),
+             ('Z', 'f4'),
+             ('LAMBDA', 'f4'),
+             ('LAMBDA_E', 'f4'),
+             ('Z_LAMBDA', 'f4'),
+             ('Z_LAMBDA_E', 'f4'),
+             ('R_LAMBDA', 'f4'),
+             ('R_MASK', 'f4'),
+             ('SCALEVAL', 'f4'),
+             ('MASKFRAC', 'f4'),
+             ('EBV_MEAN', 'f4'),
+             ('ID_INPUT', 'i4'),
+             ('LAMBDA_IN', 'f4'),
+             ('Z_IN', 'f4')]
+
+    cat = ClusterCatalog.zeros(incat.size,
+                                    zredstr=state['zredstr'],
+                                    config=config,
+                                    bkg=state['bkg'],
+                                    cosmo=state['cosmo'],
+                                    r0=state['r0'],
+                                    beta=state['beta'],
+                                    dtype=dtype)
+
+    cat.ra = incat.ra
+    cat.dec = incat.dec
+    cat.mem_match_id = incat.id
+    cat.z = incat.z
+    cat.Lambda = incat.Lambda
+    cat.id_input = incat.id_input
+    cat.lambda_in = incat.Lambda
+    cat.z_in = incat.z
+
+    state['cat'] = cat
+    return state, True
+
+def _randoms_process_cluster(cluster, state):
+    cluster.Lambda = cluster.lambda_in
+    cluster.r_lambda = state['r0']*(cluster.Lambda/100.)**state['beta']
+    cluster.r_mask = cluster.r_lambda
+
+    maxmag = cluster.mstar - 2.5*np.log10(state['config'].lval_reference)
+    cpars = calc_maskcorr(state['mask']['maskgals'], cluster.mstar, maxmag, state['zredstr']['limmag'], state['mask']['rng'])
+    cval = np.sum(cpars*cluster.r_lambda**(np.arange(cpars.size)[::-1]))
+    cluster.scaleval = 1./(1. - cval)
+
+    return False
+
+def run_randoms_zmask(conf):
     """
-    The RunRandomsZmask class is derived from ClusterRunner, and will
-    compute the masked fraction in the vicinity of a fake cluster.
+    Run randoms on a zmask.
     """
+    if not isinstance(conf, Configuration):
+        config = Configuration(conf)
+    else:
+        config = conf
 
-    def _additional_initialization(self):
-        """
-        Additional initialization for RunCatalog.
-        """
+    read_gals = config.depthfile is None
 
-        # This is used to select the masking parameters
-        self.runmode = 'percolation'
-
-        if self.config.depthfile is None:
-            # Only read galaxies if we don't have a real depth file
-            self.read_gals = True
-        else:
-            self.read_gals = False
-        self.read_zreds = False
-        self.zreds_required = False
-        self.filetype = 'randoms_zmask'
-
-    def run(self, *args, **kwargs):
-        """
-        Run a catalog through RunCatalog.
-
-        Loop over all clusters and perform RunCatalog computations on each cluster.
-
-        Parameters
-        ----------
-        cleaninput: `bool`, optional
-           Clean seed clusters that are out of the footprint?  Default is False.
-        """
-
-        return super(RunRandomsZmask, self).run(*args, **kwargs)
-
-    def _more_setup(self, *args, **kwargs):
-        """
-        More setup for RunRandomsZmask.
-        """
-
-        # Read in the random catalog
-        incat = RandomCatalog.from_randfile(self.config.randfile,
-                                            nside=self.config.d.nside,
-                                            hpix=self.config.d.hpix,
-                                            border=self.config.border)
-
-        dtype = [('MEM_MATCH_ID', 'i4'),
-                 ('RA', 'f8'),
-                 ('DEC', 'f8'),
-                 ('Z', 'f4'),
-                 ('LAMBDA', 'f4'),
-                 ('LAMBDA_E', 'f4'),
-                 ('Z_LAMBDA', 'f4'),
-                 ('Z_LAMBDA_E', 'f4'),
-                 ('R_LAMBDA', 'f4'),
-                 ('R_MASK', 'f4'),
-                 ('SCALEVAL', 'f4'),
-                 ('MASKFRAC', 'f4'),
-                 ('EBV_MEAN', 'f4'),
-                 ('ID_INPUT', 'i4'),
-                 ('LAMBDA_IN', 'f4'),
-                 ('Z_IN', 'f4')]
-
-        self.cat = ClusterCatalog.zeros(incat.size,
-                                        zredstr=self.zredstr,
-                                        config=self.config,
-                                        bkg=self.bkg,
-                                        cosmo=self.cosmo,
-                                        r0=self.r0,
-                                        beta=self.beta,
-                                        dtype=dtype)
-
-        self.cat.ra = incat.ra
-        self.cat.dec = incat.dec
-        self.cat.mem_match_id = incat.id
-        self.cat.z = incat.z
-        self.cat.Lambda = incat.Lambda
-        self.cat.id_input = incat.id_input
-        self.cat.lambda_in = incat.Lambda
-        self.cat.z_in = incat.z
-
-        self.do_lam_plusminus = False
-        self.match_centers_to_galaxies = False
-        self.do_percolation_masking = False
-        self.record_members = False
-
-        return True
-
-    def _process_cluster(self, cluster):
-        """
-        Process a single random cluster with RunRandomsZmask.
-
-        Parameters
-        ----------
-        cluster: `redmapper.Cluster`
-           Cluster to compute mask info.
-
-        Returns
-        -------
-        fail: `bool`
-        """
-
-        # This only needs to compute scaleval, and set r_lambda
-        cluster.Lambda = cluster.lambda_in
-        cluster.r_lambda = cluster.r0*(cluster.Lambda/100.)**cluster.beta
-        cluster.r_mask = cluster.r_lambda
-
-        maxmag = cluster.mstar - 2.5*np.log10(self.config.lval_reference)
-        cpars = self.mask.calc_maskcorr(cluster.mstar, maxmag, cluster.zredstr.limmag)
-        cval = np.sum(cpars*cluster.r_lambda**(np.arange(cpars.size)[::-1]))
-        cluster.scaleval = 1./(1. - cval)
-
-        # False means we did not fail.
-        return False
+    cat, members = run_cluster_pipeline(
+        config,
+        runmode='percolation',
+        filetype='randoms_zmask',
+        more_setup_fn=_randoms_more_setup,
+        process_cluster_fn=_randoms_process_cluster,
+        read_gals=read_gals,
+        read_zreds=False,
+        zreds_required=False,
+        cutgals_bkgrange=False,
+        cutgals_chisqmax=False,
+        do_lam_plusminus=False,
+        match_centers_to_galaxies=False,
+        do_percolation_masking=False,
+        record_members=False
+    )
+        
+    return cat, members

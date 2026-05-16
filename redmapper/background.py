@@ -10,8 +10,9 @@ import time
 import copy
 import os
 import esutil
-
 import multiprocessing
+
+from .logger import logger
 
 import types
 try:
@@ -21,932 +22,912 @@ except ImportError:
 
 from .catalog import Entry
 from .galaxy import GalaxyCatalog
-from .redsequence import RedSequenceColorPar
-from .depthmap import DepthMap
+from .redsequence import read_redsequence, redsequence_zindex, redsequence_mstar, compute_redsequence_chisq
+from . import depthmap
 from .utilities import interpol, cic
 from .utilities import _pickle_method
 
 copyreg.pickle(types.MethodType, _pickle_method)
 
-class Background(object):
+def read_background(filename):
     """
-    Galaxy background class.
+    Read background data from a FITS file and interpolate to a standard fine grid.
 
-    This class describes the binned, interpolateable background term b(x), where
-    x describes the redshift, chi-squared, and reference magnitude of the galaxy.
+    Parameters
+    ----------
+    filename: `str`
+        Background filename
 
-    This is used in regular richness calculations.
+    Returns
+    -------
+    background_data: `dict`
+        Dictionary containing background data and metadata
     """
+    obkg = Entry.from_fits_file(filename, ext='CHISQBKG')
 
-    def __init__(self, filename):
-        """
-        Instantiate a Background
+    # Set the bin size in redshift, chisq and refmag spaces
+    zbinsize = 0.001
+    chisqbinsize = 0.5
+    refmagbinsize = 0.01
 
-        Parameters
-        ----------
-        filename: `string`
-           Background filename
-        """
+    # Create the refmag bins
+    refmagbins = np.arange(obkg.refmagrange[0], obkg.refmagrange[1], refmagbinsize)
+    nrefmagbins = refmagbins.size
 
-        obkg = Entry.from_fits_file(filename, ext='CHISQBKG')
+    # Create the chisq bins
+    nchisqbins = obkg.chisqbins.size
+    nlnchisqbins = obkg.lnchisqbins.size
 
-        # Set the bin size in redshift, chisq and refmag spaces
-        self.zbinsize = 0.001
-        self.chisqbinsize = 0.5
-        self.refmagbinsize = 0.01
+    # Read out the number of redshift bins from the object background
+    nzbins = obkg.zbins.size
 
-        # Create the refmag bins
-        refmagbins = np.arange(obkg.refmagrange[0], obkg.refmagrange[1], self.refmagbinsize)
-        nrefmagbins = refmagbins.size
+    # Set up some arrays to populate
+    sigma_g_new = np.zeros((nrefmagbins, nchisqbins, nzbins))
+    sigma_lng_new = np.zeros((nrefmagbins, nlnchisqbins, nzbins))
 
-        # Create the chisq bins
-        nchisqbins = obkg.chisqbins.size
-        nlnchisqbins = obkg.lnchisqbins.size
+    # Do linear interpolation to get the sigma_g value
+    # between the raw background points.
+    # If any values are less than 0 then turn them into 0.
+    for i in range(nzbins):
+        for j in range(nchisqbins):
+            sigma_g_new[:, j, i] = np.interp(refmagbins, obkg.refmagbins, obkg.sigma_g[:, j, i])
+            sigma_g_new[:, j, i] = np.where(sigma_g_new[:, j, i] < 0, 0, sigma_g_new[:, j, i])
+        for j in range(nlnchisqbins):
+            sigma_lng_new[:, j, i] = np.interp(refmagbins, obkg.refmagbins, obkg.sigma_lng[:, j, i])
+            sigma_lng_new[:, j, i] = np.where(sigma_lng_new[:, j, i] < 0, 0, sigma_lng_new[:, j, i])
 
-        # Read out the number of redshift bins from the object background
-        nzbins = obkg.zbins.size
+    sigma_g = sigma_g_new
+    sigma_lng = sigma_lng_new
 
-        # Set up some arrays to populate
-        sigma_g_new = np.zeros((nrefmagbins, nchisqbins, nzbins))
-        sigma_lng_new = np.zeros((nrefmagbins, nchisqbins, nzbins))
+    chisqbins = np.arange(obkg.chisqrange[0], obkg.chisqrange[1], chisqbinsize)
+    nchisqbins_new = chisqbins.size
 
-        # Do linear interpolation to get the sigma_g value
-        # between the raw background points.
-        # If any values are less than 0 then turn them into 0.
-        for i in range(nzbins):
-            for j in range(nchisqbins):
-                sigma_g_new[:,j,i] = np.interp(refmagbins, obkg.refmagbins, obkg.sigma_g[:,j,i])
-                sigma_g_new[:,j,i] = np.where(sigma_g_new[:,j,i] < 0, 0, sigma_g_new[:,j,i])
-                sigma_lng_new[:,j,i] = np.interp(refmagbins, obkg.refmagbins, obkg.sigma_lng[:,j,i])
-                sigma_lng_new[:,j,i] = np.where(sigma_lng_new[:,j,i] < 0, 0, sigma_lng_new[:,j,i])
+    sigma_g_new = np.zeros((nrefmagbins, nchisqbins_new, nzbins))
 
-        sigma_g = sigma_g_new.copy()
-        sigma_lng = sigma_lng_new.copy()
+    # Now do the interpolation in chisq space
+    for i in range(nzbins):
+        for j in range(nrefmagbins):
+            sigma_g_new[j, :, i] = np.interp(chisqbins, obkg.chisqbins, sigma_g[j, :, i])
+            sigma_g_new[j, :, i] = np.where(sigma_g_new[j, :, i] < 0, 0, sigma_g_new[j, :, i])
 
-        chisqbins = np.arange(obkg.chisqrange[0], obkg.chisqrange[1], self.chisqbinsize)
-        nchisqbins = chisqbins.size
+    sigma_g = sigma_g_new
 
-        sigma_g_new = np.zeros((nrefmagbins, nchisqbins, nzbins))
+    zbins = np.arange(obkg.zrange[0], obkg.zrange[1], zbinsize)
+    nzbins_new = zbins.size
 
-        # Now do the interpolation in chisq space
-        for i in range(nzbins):
-            for j in range(nrefmagbins):
-                sigma_g_new[j,:,i] = np.interp(chisqbins, obkg.chisqbins, sigma_g[j,:,i])
-                sigma_g_new[j,:,i] = np.where(sigma_g_new[j,:,i] < 0, 0, sigma_g_new[j,:,i])
+    sigma_g_final = np.zeros((nrefmagbins, nchisqbins_new, nzbins_new))
+    sigma_lng_final = np.zeros((nrefmagbins, nlnchisqbins, nzbins_new))
 
-        sigma_g = sigma_g_new.copy()
+    # Now do the interpolation in redshift space
+    for i in range(nchisqbins_new):
+        for j in range(nrefmagbins):
+            sigma_g_final[j, i, :] = np.interp(zbins, obkg.zbins, sigma_g[j, i, :])
+            sigma_g_final[j, i, :] = np.where(sigma_g_final[j, i, :] < 0, 0, sigma_g_final[j, i, :])
 
-        zbins = np.arange(obkg.zrange[0], obkg.zrange[1], self.zbinsize)
-        nzbins = zbins.size
+    for i in range(nlnchisqbins):
+        for j in range(nrefmagbins):
+            sigma_lng_final[j, i, :] = np.interp(zbins, obkg.zbins, sigma_lng[j, i, :])
+            sigma_lng_final[j, i, :] = np.where(sigma_lng_final[j, i, :] < 0, 0, sigma_lng_final[j, i, :])
 
-        sigma_g_new = np.zeros((nrefmagbins, nchisqbins, nzbins))
-        sigma_lng_new = np.zeros((nrefmagbins, nlnchisqbins, nzbins))
+    n_new = np.zeros((nrefmagbins, nzbins_new))
+    for i in range(nzbins_new):
+        n_new[:, i] = np.sum(sigma_g_final[:, :, i], axis=1, dtype=np.float64) * chisqbinsize
 
-        # Now do the interpolation in redshift space
-        for i in range(nchisqbins):
-            for j in range(nrefmagbins):
-                sigma_g_new[j,i,:] = np.interp(zbins, obkg.zbins, sigma_g[j,i,:])
-                sigma_g_new[j,i,:] = np.where(sigma_g_new[j,i,:] < 0, 0, sigma_g_new[j,i,:])
+    background_data = {
+        'refmagbins': refmagbins,
+        'chisqbins': chisqbins,
+        'lnchisqbins': obkg.lnchisqbins,
+        'zbins': zbins,
+        'sigma_g': sigma_g_final,
+        'sigma_lng': sigma_lng_final,
+        'n': n_new,
+        'zbinsize': zbinsize,
+        'chisqbinsize': chisqbinsize,
+        'refmagbinsize': refmagbinsize
+    }
 
-        for i in range(nlnchisqbins):
-            for j in range(nrefmagbins):
-                sigma_lng_new[j,i,:] = np.interp(zbins, obkg.zbins, sigma_lng[j,i,:])
-                sigma_lng_new[j,i,:] = np.where(sigma_lng_new[j,i,:] < 0, 0, sigma_lng_new[j,i,:])
+    return background_data
 
-        n_new = np.zeros((nrefmagbins, nzbins))
-        for i in range(nzbins):
-            n_new[:,i] = np.sum(sigma_g_new[:,:,i], axis=1, dtype=np.float64) * self.chisqbinsize
-
-        # Save all meaningful fields
-        # to be attributes of the background object.
-        self.refmagbins = refmagbins
-        self.chisqbins = chisqbins
-        self.lnchisqbins = obkg.lnchisqbins
-        self.zbins = zbins
-        self.sigma_g = sigma_g_new
-        self.sigma_lng = sigma_lng_new
-        self.n = n_new
-
-    def sigma_g_lookup(self, z, chisq, refmag, allow0=False):
-        """
-        Look up the Sigma_g(z, chisq, refmag) background quantity for matched filter
-
-        Parameters
-        ----------
-        z: `np.array`
-           redshifts of galaxies
-        chisq: `np.array`
-           chi-squared values of galaxies
-        refmag: `np.array`
-           reference magnitudes of galaxies
-        allow0: `bool`, optional
-           Flag to allow Sigma_g(x) to be zero.  Otherwise will set to infinity
-           where there is no data.  Default is False.
-
-        Returns
-        -------
-        sigma_g: `np.array`
-           Sigma_g(x) for input values
-        """
-        zmin = self.zbins[0]
-        chisqindex = np.searchsorted(self.chisqbins, chisq) - 1
-        refmagindex = np.searchsorted(self.refmagbins, refmag) - 1
-        # Look into changing to searchsorted
-        ind = np.clip(np.round((z-zmin)/(self.zbins[1]-zmin)),0, self.zbins.size-1).astype(np.int32)
-
-        badchisq, = np.where((chisq < self.chisqbins[0]) |
-                             (chisq > (self.chisqbins[-1] + self.chisqbinsize)))
-        badrefmag, = np.where((refmag <= self.refmagbins[0]) |
-                              (refmag > (self.refmagbins[-1] + self.refmagbinsize)))
-
-        chisqindex[badchisq] = 0
-        refmagindex[badrefmag] = 0
-
-        zindex = np.full_like(chisqindex, ind)
-        lookup_vals = self.sigma_g[refmagindex, chisqindex, zindex]
-        lookup_vals[badchisq] = np.inf
-        lookup_vals[badrefmag] = np.inf
-
-        if not allow0:
-            lookup_vals[lookup_vals == 0.0] = np.inf
-
-        return lookup_vals
-
-class ZredBackground(object):
+def compute_background(background_data, z, chisq, refmag, allow0=False):
     """
-    Zred background class.
+    Look up the Sigma_g(z, chisq, refmag) background quantity.
 
-    This class describes the binned, interpolateable background term b(x), where
-    x describes the zred and reference magnitude of the galaxy.
+    Parameters
+    ----------
+    background_data: `dict`
+        Background data dictionary from read_background
+    z: `np.array`
+       redshifts of galaxies
+    chisq: `np.array`
+       chi-squared values of galaxies
+    refmag: `np.array`
+       reference magnitudes of galaxies
+    allow0: `bool`, optional
+       Flag to allow Sigma_g(x) to be zero. Otherwise will set to infinity
+       where there is no data. Default is False.
 
-    This is used in centering calculations.
+    Returns
+    -------
+    sigma_g: `np.array`
+       Sigma_g(x) for input values
     """
+    zbins = background_data['zbins']
+    chisqbins = background_data['chisqbins']
+    refmagbins = background_data['refmagbins']
+    sigma_g = background_data['sigma_g']
+    chisqbinsize = background_data['chisqbinsize']
+    refmagbinsize = background_data['refmagbinsize']
 
-    def __init__(self, filename):
-        """
-        Instantiate a Zred Background
+    zmin = zbins[0]
+    chisqindex = np.searchsorted(chisqbins, chisq) - 1
+    refmagindex = np.searchsorted(refmagbins, refmag) - 1
+    
+    ind = np.clip(np.round((z-zmin)/(zbins[1]-zmin)), 0, zbins.size-1).astype(np.int32)
 
-        Parameters
-        ----------
-        filename: `string`
-           Zred background filename
-        """
-        obkg = Entry.from_fits_file(filename, ext='ZREDBKG')
+    badchisq, = np.where((chisq < chisqbins[0]) |
+                         (chisq > (chisqbins[-1] + chisqbinsize)))
+    badrefmag, = np.where((refmag <= refmagbins[0]) |
+                          (refmag > (refmagbins[-1] + refmagbinsize)))
 
-        # Will want to make configurable
-        self.refmagbinsize = 0.01
-        self.zredbinsize = 0.001
+    chisqindex[badchisq] = 0
+    refmagindex[badrefmag] = 0
 
-        # Create the refmag bins
-        refmagbins = np.arange(obkg.refmagrange[0], obkg.refmagrange[1], self.refmagbinsize)
-        nrefmagbins = refmagbins.size
+    zindex = np.full_like(chisqindex, ind)
+    lookup_vals = sigma_g[refmagindex, chisqindex, zindex]
+    lookup_vals[badchisq] = np.inf
+    lookup_vals[badrefmag] = np.inf
 
-        # Leave the zred bins the same
-        nzredbins = obkg.zredbins.size
+    if not allow0:
+        lookup_vals[lookup_vals == 0.0] = np.inf
 
-        # Set up arrays to populate
-        sigma_g_new = np.zeros((nrefmagbins, nzredbins))
+    return lookup_vals
 
-        floor = np.min(obkg.sigma_g)
-
-        for i in range(nzredbins):
-            sigma_g_new[:, i] = np.clip(interpol(obkg.sigma_g[:, i], obkg.refmagbins, refmagbins), floor, None)
-
-        sigma_g = sigma_g_new.copy()
-
-        # And update zred
-        zredbins = np.arange(obkg.zredrange[0], obkg.zredrange[1], self.zredbinsize)
-        nzredbins = zredbins.size
-
-        sigma_g_new = np.zeros((nrefmagbins, nzredbins))
-
-        for i in range(nrefmagbins):
-            sigma_g_new[i, :] = np.clip(interpol(sigma_g[i, :], obkg.zredbins, zredbins), floor, None)
-
-        self.zredbins = zredbins
-        self.zredrange = obkg.zredrange
-        self.zred_index = 0
-        self.refmag_index = 1
-        self.refmagbins = refmagbins
-        self.refmagrange = obkg.refmagrange
-        self.sigma_g = sigma_g_new
-
-    def sigma_g_lookup(self, zred, refmag):
-        """
-        Look up the Sigma_g(zred, refmag) background quantity for centering calculations
-
-        Parameters
-        ----------
-        zred: `np.array`
-           zred redshifts of galaxies
-        refmag: `np.array`
-           reference magnitudes of galaxies
-
-        Returns
-        -------
-        sigma_g: `np.array`
-           Sigma_g(x) for input values
-        """
-
-        zredindex = np.searchsorted(self.zredbins, zred) - 1
-        refmagindex = np.searchsorted(self.refmagbins, refmag) - 1
-
-        badzred, = np.where((zredindex < 0) |
-                            (zredindex >= self.zredbins.size))
-        zredindex[badzred] = 0
-        badrefmag, = np.where((refmagindex < 0) |
-                              (refmagindex >= self.refmagbins.size))
-        refmagindex[badrefmag] = 0
-
-        lookup_vals = self.sigma_g[refmagindex, zredindex]
-
-        lookup_vals[badzred] = np.inf
-        lookup_vals[badrefmag] = np.inf
-
-        return lookup_vals
-
-class BackgroundGenerator(object):
+def read_zred_background(filename):
     """
-    Class to generate the galaxy background.
+    Read zred background data from a FITS file and interpolate to standard grid.
 
-    This class will use multiprocessing to generate the galaxy background table
-    to look up Sigma_g(z, chi-squared, refmag).
+    Parameters
+    ----------
+    filename: `str`
+        Zred background filename
+
+    Returns
+    -------
+    zred_background_data: `dict`
+        Dictionary containing zred background data and metadata
     """
+    obkg = Entry.from_fits_file(filename, ext='ZREDBKG')
 
-    def __init__(self, config):
-        """
-        Instantiate a BackgroundGenerator
+    refmagbinsize = 0.01
+    zredbinsize = 0.001
 
-        Parameters
-        ----------
-        config: `redmapper.Configuration`
-           Redmapper configuration object
-        """
-        # We need to delete "cosmo" from the config for pickling/multiprocessing
-        self.config = config.copy()
-        self.config.cosmo = None
+    # Create the refmag bins
+    refmagbins = np.arange(obkg.refmagrange[0], obkg.refmagrange[1], refmagbinsize)
+    nrefmagbins = refmagbins.size
 
-    def run(self, clobber=False, natatime=100000, deepmode=False):
-        """
-        Generate the galaxy background using multiprocessing.  The number of
-        cores used is specified in self.config.calib_nproc, and the output
-        filename is specified in self.config.bkgfile.
+    # Leave the zred bins the same
+    nzredbins = obkg.zredbins.size
 
-        Parameters
-        ----------
-        clobber: `bool`, optional
-           Overwrite any existing self.config.bkgfile file.  Default is False.
-        natatime: `int`, optional
-           Number of galaxies to read at a time.  Default is 100000.
-        deepmode: `bool`, optional
-           Run background to full depth of survey (rather than Lstar richness limit).
-           Default is False.
-        """
+    # Set up arrays to populate
+    sigma_g_new = np.zeros((nrefmagbins, nzredbins))
 
-        self.natatime = natatime
-        self.deepmode = deepmode
+    floor = np.min(obkg.sigma_g)
 
-        if not clobber:
-            if os.path.isfile(self.config.bkgfile):
-                with fitsio.FITS(self.config.bkgfile) as fits:
-                    if 'CHISQBKG' in [ext.get_extname() for ext in fits[1: ]]:
-                        self.config.logger.info("CHISQBKG already in %s and clobber is False" % (self.config.bkgfile))
-                        return
+    for i in range(nzredbins):
+        sigma_g_new[:, i] = np.clip(interpol(obkg.sigma_g[:, i], obkg.refmagbins, refmagbins), floor, None)
 
-        # get the ranges
-        self.refmagrange = np.array([12.0, self.config.limmag_catalog])
-        self.nrefmagbins = np.ceil((self.refmagrange[1] - self.refmagrange[0]) / self.config.bkg_refmagbinsize).astype(np.int32)
-        self.refmagbins = np.arange(self.nrefmagbins) * self.config.bkg_refmagbinsize + self.refmagrange[0]
+    sigma_g = sigma_g_new
 
-        self.chisqrange = np.array([0.0, self.config.chisq_max])
-        self.nchisqbins = np.ceil((self.chisqrange[1] - self.chisqrange[0]) / self.config.bkg_chisqbinsize).astype(np.int32)
-        self.chisqbins = np.arange(self.nchisqbins) * self.config.bkg_chisqbinsize + self.chisqrange[0]
+    # And update zred
+    zredbins = np.arange(obkg.zredrange[0], obkg.zredrange[1], zredbinsize)
+    nzredbins = zredbins.size
 
-        self.lnchisqbinsize = 0.2
-        self.lnchisqrange = np.array([-2.0, 6.0])
-        self.nlnchisqbins = np.ceil((self.lnchisqrange[1] - self.lnchisqrange[0]) / self.lnchisqbinsize).astype(np.int32)
-        self.lnchisqbins = np.arange(self.nlnchisqbins) * self.lnchisqbinsize + self.lnchisqrange[0]
+    sigma_g_new = np.zeros((nrefmagbins, nzredbins))
 
-        self.nzbins = np.ceil((self.config.zrange[1] - self.config.zrange[0]) / self.config.bkg_zbinsize).astype(np.int32)
-        self.zbins = np.arange(self.nzbins) * self.config.bkg_zbinsize + self.config.zrange[0]
+    for i in range(nrefmagbins):
+        sigma_g_new[i, :] = np.clip(interpol(sigma_g[i, :], obkg.zredbins, zredbins), floor, None)
 
-        # this is the background hist
-        sigma_g = np.zeros((self.nrefmagbins, self.nchisqbins, self.nzbins))
-        sigma_lng = np.zeros((self.nrefmagbins, self.nlnchisqbins, self.nzbins))
+    zred_background_data = {
+        'zredbins': zredbins,
+        'zredrange': obkg.zredrange,
+        'refmagbins': refmagbins,
+        'refmagrange': obkg.refmagrange,
+        'sigma_g': sigma_g_new,
+        'refmagbinsize': refmagbinsize,
+        'zredbinsize': zredbinsize
+    }
 
-        # We need the areas from the depth map
-        if self.config.depthfile is not None:
-            depthstr = DepthMap(self.config)
-            self.areas = depthstr.calc_areas(self.refmagbins)
-        else:
-            self.areas = np.zeros(self.refmagbins.size) + self.config.area
+    return zred_background_data
 
+def compute_zred_background(zred_background_data, zred, refmag):
+    """
+    Look up the Sigma_g(zred, refmag) background quantity for centering calculations.
 
-        # Split into bins for parallel running
-        logrange = np.log(np.array([self.config.zrange[0] - 0.001,
-                                    self.config.zrange[1] + 0.001]))
-        logbinsize = (logrange[1] - logrange[0]) / self.config.calib_nproc
-        zedges = (np.exp(logrange[0]) + np.exp(logrange[1])) - np.exp(logrange[0] + np.arange(self.config.calib_nproc + 1) * logbinsize)
+    Parameters
+    ----------
+    zred_background_data: `dict`
+        Zred background data dictionary from read_zred_background
+    zred: `np.array`
+       zred redshifts of galaxies
+    refmag: `np.array`
+       reference magnitudes of galaxies
 
-        worker_list = []
-        for i in range(self.config.calib_nproc):
-            ubins, = np.where((self.zbins < zedges[i]) & (self.zbins > zedges[i + 1]))
-            gd, = np.where(ubins < self.zbins.size)
+    Returns
+    -------
+    sigma_g: `np.array`
+       Sigma_g(x) for input values
+    """
+    zredbins = zred_background_data['zredbins']
+    refmagbins = zred_background_data['refmagbins']
+    sigma_g = zred_background_data['sigma_g']
 
-            # If we have more processes than bins, some of these will be empty
-            # and this prevents us from adding them to the list
-            if gd.size == 0:
-                continue
+    zredindex = np.searchsorted(zredbins, zred) - 1
+    refmagindex = np.searchsorted(refmagbins, refmag) - 1
 
-            ubins = ubins[gd]
+    badzred, = np.where((zredindex < 0) |
+                        (zredindex >= zredbins.size))
+    zredindex[badzred] = 0
+    badrefmag, = np.where((refmagindex < 0) |
+                          (refmagindex >= refmagbins.size))
+    refmagindex[badrefmag] = 0
 
-            zbinmark = np.zeros(self.zbins.size, dtype=bool)
-            zbinmark[ubins] = True
+    lookup_vals = sigma_g[refmagindex, zredindex]
 
-            worker_list.append(zbinmark)
+    lookup_vals[badzred] = np.inf
+    lookup_vals[badrefmag] = np.inf
 
-        mp_ctx = multiprocessing.get_context("fork")
-        pool = mp_ctx.Pool(processes=self.config.calib_nproc)
-        retvals = pool.map(self._worker, worker_list, chunksize=1)
-        pool.close()
-        pool.join()
-
-        # And store the results
-        for zbinmark, sigma_g_sub, sigma_lng_sub in retvals:
-            sigma_g[:, :, zbinmark] = sigma_g_sub
-            sigma_lng[:, :, zbinmark] = sigma_lng_sub
-
-        # Generate QA plots if requested
-        if hasattr(self.config, 'more_qa_plots') and self.config.more_qa_plots:
-            self._make_qa_plots(sigma_g, sigma_lng)
-
-        # And save them
-        dtype = [('zbins', 'f4', self.zbins.size),
-                 ('zrange', 'f4', 2),
-                 ('zbinsize', 'f4'),
-                 ('chisq_index', 'i4'),
-                 ('refmag_index', 'i4'),
-                 ('chisqbins', 'f4', self.chisqbins.size),
-                 ('chisqrange', 'f4', 2),
-                 ('chisqbinsize', 'f4'),
-                 ('lnchisqbins', 'f4', self.lnchisqbins.size),
-                 ('lnchisqrange', 'f4', 2),
-                 ('lnchisqbinsize', 'f4'),
-                 ('areas', 'f4', self.areas.size),
-                 ('refmagbins', 'f4', self.refmagbins.size),
-                 ('refmagrange', 'f4', 2),
-                 ('refmagbinsize', 'f4'),
-                 ('sigma_g', 'f4', sigma_g.shape),
-                 ('sigma_lng', 'f4', sigma_lng.shape)]
-
-        chisq_bkg = Entry(np.zeros(1, dtype=dtype))
-        chisq_bkg.zbins[:] = self.zbins
-        chisq_bkg.zrange[:] = self.config.zrange
-        chisq_bkg.zbinsize = self.config.bkg_zbinsize
-        chisq_bkg.chisq_index = 0
-        chisq_bkg.refmag_index = 1
-        chisq_bkg.chisqbins[:] = self.chisqbins
-        chisq_bkg.chisqrange[:] = self.chisqrange
-        chisq_bkg.chisqbinsize = self.config.bkg_chisqbinsize
-        chisq_bkg.lnchisqbins[:] = self.lnchisqbins
-        chisq_bkg.lnchisqrange[:] = self.lnchisqrange
-        chisq_bkg.lnchisqbinsize = self.lnchisqbinsize
-        chisq_bkg.areas[:] = self.areas
-        chisq_bkg.refmagbins[:] = self.refmagbins
-        chisq_bkg.refmagrange[:] = self.refmagrange
-        chisq_bkg.refmagbinsize = self.config.bkg_refmagbinsize
-        chisq_bkg.sigma_g[:, :] = sigma_g
-        chisq_bkg.sigma_lng[:, :] = sigma_lng
-
-        chisq_bkg.to_fits_file(self.config.bkgfile, extname='CHISQBKG', clobber=clobber)
+    return lookup_vals
 
 
-    def _make_qa_plots(self, sigma_g, sigma_lng):
-        """
-        Generate QA plots for background calibration.
 
-        Parameters
-        ----------
-        sigma_g: `np.array`
-            3D array of sigma_g(refmag, chisq, z)
-        sigma_lng: `np.array`
-            3D array of sigma_lng(refmag, lnchisq, z)
-        """
-        import matplotlib
-        import matplotlib.pyplot as plt
 
-        if not hasattr(self.config, 'plotpath') or self.config.plotpath is None:
-            self.config.logger.warning("config.plotpath not set, skipping QA plots")
-            return
 
-        os.makedirs(self.config.plotpath, exist_ok=True)
+def _make_qa_plots_background(config, sigma_g, sigma_lng, refmagrange, chisqrange, nzbins, zbins):
+    """
+    Generate QA plots for background calibration.
 
-        # Plot 1: sigma_g integrated over chisq, shown as 2D map in (refmag, z) plane
-        fig, ax = plt.subplots(figsize=(12, 8))
-        # Integrate over chisq axis (axis=1)
-        sigma_refmag_z = np.sum(sigma_g, axis=1) * self.config.bkg_chisqbinsize
-        sigma_plot = np.log10(sigma_refmag_z + 1e-10)
-        im = ax.imshow(sigma_plot, origin='lower', aspect='auto',
-                      extent=[self.refmagrange[0], self.refmagrange[1],
-                              self.config.zrange[0], self.config.zrange[1]],
-                      cmap='Blues')
+    Parameters
+    ----------
+    config: `redmapper.Configuration`
+    sigma_g: `np.array`
+        3D array of sigma_g(refmag, chisq, z)
+    sigma_lng: `np.array`
+        3D array of sigma_lng(refmag, lnchisq, z)
+    """
+    import matplotlib
+    import matplotlib.pyplot as plt
+
+    if not hasattr(config, 'plotpath') or config.plotpath is None:
+        logger.warning("config.plotpath not set, skipping QA plots")
+        return
+
+    os.makedirs(config.plotpath, exist_ok=True)
+
+    # Plot 1: sigma_g integrated over chisq, shown as 2D map in (refmag, z) plane
+    fig, ax = plt.subplots(figsize=(12, 8))
+    # Integrate over chisq axis (axis=1)
+    sigma_refmag_z = np.sum(sigma_g, axis=1) * config.bkg_chisqbinsize
+    sigma_plot = np.log10(sigma_refmag_z + 1e-10)
+    im = ax.imshow(sigma_plot, origin='lower', aspect='auto',
+                  extent=[refmagrange[0], refmagrange[1],
+                          config.zrange[0], config.zrange[1]],
+                  cmap='Blues')
+    ax.set_xlabel('refmag')
+    ax.set_ylabel('Redshift')
+    ax.set_title(r'$\log_{10}(\Sigma_g)$ integrated over $\chi^2$')
+    plt.colorbar(im, ax=ax, label=r'$\log_{10}(\Sigma_g)$ [deg$^{-2}$]')
+    plt.tight_layout()
+    plt.savefig(os.path.join(config.plotpath, 'bkg_sigma_g_refmag_z.png'), dpi=300)
+    plt.close()
+    logger.info("Saved QA plot: bkg_sigma_g_refmag_z.png")
+
+    # Plot 2: 2D maps of sigma_g(refmag, chisq) at different z (keep original)
+    fig, axes = plt.subplots(2, 3, figsize=(18, 12))
+    z_indices_2d = np.linspace(0, nzbins - 1, 6, dtype=int)
+
+    for idx, (ax, zi) in enumerate(zip(axes.flat, z_indices_2d)):
+        sigma_plot = np.log10(sigma_g[:, :, zi] + 1e-10)
+        im = ax.imshow(sigma_plot.T, origin='lower', aspect='auto', 
+                      extent=[refmagrange[0], refmagrange[1],
+                             chisqrange[0], chisqrange[1]],
+                      cmap='Reds')
         ax.set_xlabel('refmag')
-        ax.set_ylabel('Redshift')
-        ax.set_title(r'$\log_{10}(\Sigma_g)$ integrated over $\chi^2$')
-        plt.colorbar(im, ax=ax, label=r'$\log_{10}(\Sigma_g)$ [deg$^{-2}$]')
-        plt.tight_layout()
-        plt.savefig(os.path.join(self.config.plotpath, 'bkg_sigma_g_refmag_z.png'), dpi=300)
-        plt.close()
-        self.config.logger.info("Saved QA plot: bkg_sigma_g_refmag_z.png")
+        ax.set_ylabel(r'$\chi^2$')
+        ax.set_title(f'z = {zbins[zi]:.3f}')
+        plt.colorbar(im, ax=ax, label=r'$\log_{10}(\Sigma_g)$')
 
-        # Plot 2: 2D maps of sigma_g(refmag, chisq) at different z (keep original)
-        fig, axes = plt.subplots(2, 3, figsize=(18, 12))
-        z_indices_2d = np.linspace(0, self.nzbins - 1, 6, dtype=int)
+    plt.tight_layout()
+    plt.savefig(os.path.join(config.plotpath, 'bkg_sigma_g_2d.png'), dpi=300)
+    plt.close()
+    logger.info("Saved QA plot: bkg_sigma_g_2d.png")
 
-        for idx, (ax, zi) in enumerate(zip(axes.flat, z_indices_2d)):
-            sigma_plot = np.log10(sigma_g[:, :, zi] + 1e-10)
-            im = ax.imshow(sigma_plot.T, origin='lower', aspect='auto', 
-                          extent=[self.refmagrange[0], self.refmagrange[1],
-                                 self.chisqrange[0], self.chisqrange[1]],
-                          cmap='Reds')
-            ax.set_xlabel('refmag')
-            ax.set_ylabel(r'$\chi^2$')
-            ax.set_title(f'z = {self.zbins[zi]:.3f}')
-            plt.colorbar(im, ax=ax, label=r'$\log_{10}(\Sigma_g)$')
+    # Plot 3: chisq distribution at different z (all curves in one plot)
+    fig, ax = plt.subplots(figsize=(10, 6))
+    nchisqbins = sigma_g.shape[1]
+    chisqbins = np.arange(nchisqbins) * config.bkg_chisqbinsize + chisqrange[0]
+    n_z_samples = 8
+    z_indices = np.linspace(0, nzbins - 1, n_z_samples, dtype=int)
+    colors = plt.cm.coolwarm(np.linspace(0, 1, n_z_samples))
+    
+    for i, zi in enumerate(z_indices):
+        # Integrate over refmag
+        sigma_chisq = np.sum(sigma_g[:, :, zi], axis=0) * config.bkg_refmagbinsize
+        ax.plot(chisqbins, sigma_chisq, color=colors[i], 
+               linewidth=1.5, label=f'z={zbins[zi]:.2f}')
+    
+    ax.set_xlabel(r'$\chi^2$')
+    ax.set_ylabel(r'$\Sigma_g$ [integrated over refmag, deg$^{-2}$]')
+    ax.set_title(r'$\chi^2$ Distribution at Different Redshifts')
+    ax.set_yscale('log')
+    ax.set_ylim(bottom=1e-5)
+    ax.legend(loc='upper right', fontsize=8, ncol=2)
+    ax.grid(True, alpha=0.3)
+    plt.tight_layout()
+    plt.savefig(os.path.join(config.plotpath, 'bkg_chisq_distribution.png'), dpi=300)
+    plt.close()
+    logger.info("Saved QA plot: bkg_chisq_distribution.png")
 
-        plt.tight_layout()
-        plt.savefig(os.path.join(self.config.plotpath, 'bkg_sigma_g_2d.png'), dpi=300)
-        plt.close()
-        self.config.logger.info("Saved QA plot: bkg_sigma_g_2d.png")
+    # Plot 4: Total background density vs z
+    fig, ax = plt.subplots(figsize=(10, 6))
+    n_total = np.sum(sigma_g, axis=(0, 1)) * config.bkg_refmagbinsize * config.bkg_chisqbinsize
+    ax.step(zbins, n_total, 'k-', linewidth=2, where='mid')
+    ax.set_xlabel('Redshift')
+    ax.set_ylabel(r'Total $\Sigma_g$ [deg$^{-2}$]')
+    ax.set_title('Total Background Density vs Redshift')
+    ax.grid(True, alpha=0.3)
 
-        # Plot 3: chisq distribution at different z (all curves in one plot)
-        fig, ax = plt.subplots(figsize=(10, 6))
-        n_z_samples = 8
-        z_indices = np.linspace(0, self.nzbins - 1, n_z_samples, dtype=int)
-        colors = plt.cm.coolwarm(np.linspace(0, 1, n_z_samples))
-        
-        for i, zi in enumerate(z_indices):
-            # Integrate over refmag
-            sigma_chisq = np.sum(sigma_g[:, :, zi], axis=0) * self.config.bkg_refmagbinsize
-            ax.plot(self.chisqbins, sigma_chisq, color=colors[i], 
-                   linewidth=1.5, label=f'z={self.zbins[zi]:.2f}')
-        
-        ax.set_xlabel(r'$\chi^2$')
-        ax.set_ylabel(r'$\Sigma_g$ [integrated over refmag, deg$^{-2}$]')
-        ax.set_title(r'$\chi^2$ Distribution at Different Redshifts')
-        ax.set_yscale('log')
-        ax.set_ylim(bottom=1e-5)
-        ax.legend(loc='upper right', fontsize=8, ncol=2)
-        ax.grid(True, alpha=0.3)
-        plt.tight_layout()
-        plt.savefig(os.path.join(self.config.plotpath, 'bkg_chisq_distribution.png'), dpi=300)
-        plt.close()
-        self.config.logger.info("Saved QA plot: bkg_chisq_distribution.png")
+    plt.tight_layout()
+    plt.savefig(os.path.join(config.plotpath, 'bkg_total_vs_z.png'), dpi=300)
+    plt.close()
+    logger.info("Saved QA plot: bkg_total_vs_z.png")
 
-        # Plot 4: Total background density vs z
-        fig, ax = plt.subplots(figsize=(10, 6))
-        n_total = np.sum(sigma_g, axis=(0, 1)) * self.config.bkg_refmagbinsize * self.config.bkg_chisqbinsize
-        ax.step(self.zbins, n_total, 'k-', linewidth=2, where='mid')
-        ax.set_xlabel('Redshift')
-        ax.set_ylabel(r'Total $\Sigma_g$ [deg$^{-2}$]')
-        ax.set_title('Total Background Density vs Redshift')
-        ax.grid(True, alpha=0.3)
-
-        plt.tight_layout()
-        plt.savefig(os.path.join(self.config.plotpath, 'bkg_total_vs_z.png'), dpi=300)
-        plt.close()
-        self.config.logger.info("Saved QA plot: bkg_total_vs_z.png")
-
-    def _worker(self, zbinmark):
-        """
-        Internal worker method for multiprocessing.
-
-        Parameters
-        ----------
-        zbinmark: `np.array`
-           Indices for the redshift bins to run in this job
-
-        Returns
-        -------
-        retvals: `tuple`
-           zbinmark: `np.array`
-              Indices for redshift bins run in this job
-           sigma_g_sub: `np.array`
-              Sigma_g(x) for the redshift bins in zbinmark
-           sigma_lng_sub: `np.array`
-              Sigma_lng(x) (log binning) for the redshift bins in zbinmark
-        """
-
-        starttime = time.time()
-
-        zbins_use = self.zbins[zbinmark]
-        zrange_use = np.array([zbins_use[0], zbins_use[-1] + self.config.bkg_zbinsize])
-
-        # We need to load in the red sequence structure -- just in the specific redshift range
-        zredstr = RedSequenceColorPar(self.config.parfile, zrange=zrange_use)
-
-        zredstrbinsize = zredstr.z[1] - zredstr.z[0]
-        zpos = np.searchsorted(zredstr.z, zbins_use)
-
-        # How many galaxies total?
-        if self.config.galfile_pixelized:
-            master = Entry.from_fits_file(self.config.galfile)
-
-            if len(self.config.d.hpix) > 0:
-                # We need to take a sub-region
-                theta, phi = hpg.pixel_to_angle(master.nside, master.hpix, lonlat=False, nest=False)
-                ipring_big = hpg.angle_to_pixel(self.config.d.nside, theta, phi, lonlat=False, nest=False)
-
-                _, subreg_indices = esutil.numpy_util.match(self.config.d.hpix, ipring_big)
-                subreg_indices = np.unique(subreg_indices)
-            else:
-                subreg_indices = np.arange(master.hpix.size)
-
-            ngal = np.sum(master.ngals[subreg_indices])
-            npix = subreg_indices.size
-        else:
-            hdr = fitsio.read_header(self.config.galfile, ext=1)
-
-            ngal = hdr['NAXIS2']
-            npix = 0
-
-        nmag = self.config.nmag
-        ncol = nmag - 1
-
-        # default values are all guaranteed to be out of range
-        chisqs = np.zeros((ngal, zbins_use.size), dtype=np.float32) + np.exp(np.max(self.lnchisqbins)) + 100.0
-        refmags = np.zeros(ngal, dtype=np.float32)
-
-        if (self.deepmode):
-            zlimmag = np.atleast_1d(zredstr.mstar(zbins_use + self.config.bkg_zbinsize) - 2.5 * np.log10(0.01))
-        else:
-            zlimmag = np.atleast_1d(zredstr.mstar(zbins_use + self.config.bkg_zbinsize) - 2.5 * np.log10(0.1))
-
-        bad, = np.where(zlimmag >= self.config.limmag_catalog)
-        zlimmag[bad] = self.config.limmag_catalog - 0.01
-        zlimmagpos = np.clip(((zlimmag - self.refmagrange[0]) * self.nrefmagbins / (self.refmagrange[1] - self.refmagrange[0])).astype(np.int32), 0, self.nrefmagbins - 1)
-        zlimmag = self.refmagbins[zlimmagpos] + self.config.bkg_refmagbinsize
-
-        zbinmid = np.median(np.arange(zredstr.z.size - 1))
-
-        # And the main loop
-        ctr = 0
-        p = 0
-        # This covers both loops
-        while ((ctr < ngal) and (p < npix)):
-            # Read in a section of the galaxies, or the pixel
-            if not self.config.galfile_pixelized:
-                lo = ctr
-                hi = np.clip(ctr + self.natatime, None, ngal)
-
-                gals = GalaxyCatalog.from_fits_file(self.config.galfile, rows=np.arange(lo, hi))
-                ctr = hi + 1
-            else:
-                if master.ngals[subreg_indices[p]] == 0:
-                    p += 1
-                    continue
-
-                gals = GalaxyCatalog.from_galfile(self.config.galfile, nside=master.nside,
-                                                  hpix=master.hpix[subreg_indices[p]], border=0.0)
-
-                lo = ctr
-                hi = ctr + gals.size
-
-                ctr += master.ngals[subreg_indices[p]]
-                p += 1
-
-            inds = np.arange(lo, hi)
-
-            refmags[inds] = gals.refmag
-
-            for i, zbin in enumerate(zbins_use):
-                use, = np.where((gals.refmag > self.refmagrange[0]) &
-                                (gals.refmag < zlimmag[i]))
-
-                if (use.size > 0):
-                    # Compute chisq at the redshift zbin
-                    chisqs[inds[use], i] = zredstr.calculate_chisq(gals[use], zbin)
-
-        binsizes = self.config.bkg_refmagbinsize  * self.config.bkg_chisqbinsize
-        lnbinsizes = self.config.bkg_refmagbinsize * self.lnchisqbinsize
-
-        sigma_g_sub = np.zeros((self.nrefmagbins, self.nchisqbins, zbins_use.size))
-        sigma_lng_sub = np.zeros((self.nrefmagbins, self.nlnchisqbins, zbins_use.size))
-
-        for i, zbin in enumerate(zbins_use):
-            use, = np.where((chisqs[:, i] >= self.chisqrange[0]) &
-                            (chisqs[:, i] < self.chisqrange[1]) &
-                            (refmags >= self.refmagrange[0]) &
-                            (refmags < self.refmagrange[1]))
-            chisqpos = (chisqs[use, i] - self.chisqrange[0]) * self.nchisqbins / (self.chisqrange[1] - self.chisqrange[0])
-            refmagpos = (refmags[use] - self.refmagrange[0]) * self.nrefmagbins / (self.refmagrange[1] - self.refmagrange[0])
-
-            value = np.ones(use.size)
-
-            field = cic(value, chisqpos, self.nchisqbins, refmagpos, self.nrefmagbins, isolated=True)
-            for j in range(self.nchisqbins):
-                sigma_g_sub[:, j, i] = field[:, j] / (self.areas * binsizes)
-
-            lnchisqs = np.log(chisqs[:, i])
-
-            use, = np.where((lnchisqs >= self.lnchisqrange[0]) &
-                            (lnchisqs < self.lnchisqrange[1]) &
-                            (refmags >= self.refmagrange[0]) &
-                            (refmags < self.refmagrange[1]))
-            lnchisqpos = (lnchisqs[use] - self.lnchisqrange[0]) * self.nlnchisqbins / (self.lnchisqrange[1] - self.lnchisqrange[0])
-            refmagpos = (refmags[use] - self.refmagrange[0]) * self.nrefmagbins / (self.refmagrange[1] - self.refmagrange[0])
-
-            value = np.ones(use.size)
-
-            field2 = cic(value, lnchisqpos, self.nlnchisqbins, refmagpos, self.nrefmagbins, isolated=True)
-
-            for j in range(self.nlnchisqbins):
-                sigma_lng_sub[:, j, i] = field2[:, j] / (self.areas * lnbinsizes)
-
-        self.config.logger.info("Finished %.2f < z < %.2f in %.1f seconds" % (zbins_use[0], zbins_use[-1],
-                                                                              time.time() - starttime))
-
-        return (zbinmark, sigma_g_sub, sigma_lng_sub)
-
-class ZredBackgroundGenerator(object):
+def _background_worker(worker_args):
     """
-    Class to generate the zred galaxy background.
+    Internal worker method for multiprocessing.
 
-    This class will generate the zred galaxy background
-    table to look up Sigma_g(zred, refmag).
+    Parameters
+    ----------
+    worker_args: `tuple`
+       Tuple of (zbinmark, p)
     """
+    zbinmark, p = worker_args
+    
+    config = p['config']
+    zbins = p['zbins']
+    refmagrange = p['refmagrange']
+    nrefmagbins = p['nrefmagbins']
+    refmagbins = p['refmagbins']
+    chisqrange = p['chisqrange']
+    nchisqbins = p['nchisqbins']
+    chisqbins = p['chisqbins']
+    lnchisqrange = p['lnchisqrange']
+    nlnchisqbins = p['nlnchisqbins']
+    lnchisqbinsize = p['lnchisqbinsize']
+    lnchisqbins = p['lnchisqbins']
+    areas = p['areas']
+    deepmode = p['deepmode']
+    natatime = p['natatime']
 
-    def __init__(self, config):
-        """
-        Instantiate a ZredBackgroundGenerator
+    starttime = time.time()
 
-        Parameters
-        ----------
-        config: `redmapper.Configuration`
-           Redmapper configuration object
-        """
-        self.config = config
+    zbins_use = zbins[zbinmark]
+    zrange_use = np.array([zbins_use[0], zbins_use[-1] + config.bkg_zbinsize])
 
-    def run(self, clobber=False, natatime=100000):
-        """
-        Generate the zred galaxy background.  The output filename is specified
-        in self.config.bkgfile.
+    # We need to load in the red sequence structure -- just in the specific redshift range
+    zredstr = read_redsequence(config.parfile, zrange=zrange_use)
 
-        Parameters
-        ----------
-        clobber: `bool`, optional
-           Overwrite any existing self.config.bkgfile file.  Default is False.
-        natatime: `int`, optional
-           Number of galaxies to read at a time.  Default is 100000
-        """
+    zredstrbinsize = zredstr['z'][1] - zredstr['z'][0]
+    zpos = np.searchsorted(zredstr['z'], zbins_use)
 
-        if not os.path.isfile(self.config.zredfile):
-            raise RuntimeError("Must run ZredBackgroundGenerator with a zred file")
+    # How many galaxies total?
+    if config.galfile_pixelized:
+        master = Entry.from_fits_file(config.galfile)
 
-        if not clobber:
-            if os.path.isfile(self.config.bkgfile):
-                with fitsio.FITS(self.config.bkgfile) as fits:
-                    if 'ZREDBKG' in [ext.get_extname() for ext in fits[1: ]]:
-                        self.config.logger.info("ZREDBKG already in %s and clobber is False" % (self.config.bkgfile))
-                        return
-
-        # Read in zred parameters
-        zredstr = RedSequenceColorPar(self.config.parfile, fine=True, zrange=self.config.zrange)
-
-        # Set ranges
-        refmagrange = np.array([12.0, self.config.limmag_catalog])
-        nrefmagbins = np.ceil((refmagrange[1] - refmagrange[0]) / self.config.bkg_refmagbinsize).astype(np.int32)
-        refmagbins = np.arange(nrefmagbins) * self.config.bkg_refmagbinsize + refmagrange[0]
-
-        zredrange = np.array([zredstr.z[0], zredstr.z[-2] + (zredstr.z[1] - zredstr.z[0])])
-        nzredbins = np.ceil((zredrange[1] - zredrange[0]) / self.config.bkg_zredbinsize).astype(np.int32)
-        zredbins = np.arange(nzredbins) * self.config.bkg_zredbinsize + zredrange[0]
-
-        # Compute the areas...
-        # This takes into account the configured sub-region
-        if self.config.depthfile is not None:
-            depthstr = DepthMap(self.config)
-            areas = depthstr.calc_areas(refmagbins)
-        else:
-            areas = np.zeros(refmagbins.size) + self.config.area
-
-        maxchisq = self.config.wcen_zred_chisq_max
-
-        # Prepare pixels (if necessary) and count galaxies
-
-        if not self.config.galfile_pixelized:
-            raise ValueError("Only pixelized galfiles are supported at this moment.")
-
-        master = Entry.from_fits_file(self.config.galfile)
-
-        if len(self.config.d.hpix) > 0:
+        if len(config.hpix) > 0:
             # We need to take a sub-region
             theta, phi = hpg.pixel_to_angle(master.nside, master.hpix, lonlat=False, nest=False)
-            ipring_big = hpg.angle_to_pixel(self.config.d.nside, theta, phi, lonlat=False, nest=False)
+            ipring_big = hpg.angle_to_pixel(config.nside, theta, phi, lonlat=False, nest=False)
 
-            _, subreg_indices = esutil.numpy_util.match(self.config.d.hpix, ipring_big)
+            _, subreg_indices = esutil.numpy_util.match(config.hpix, ipring_big)
             subreg_indices = np.unique(subreg_indices)
         else:
             subreg_indices = np.arange(master.hpix.size)
 
         ngal = np.sum(master.ngals[subreg_indices])
         npix = subreg_indices.size
+    else:
+        hdr = fitsio.read_header(config.galfile, ext=1)
 
-        starttime = time.time()
+        ngal = hdr['NAXIS2']
+        npix = 0
 
-        nmag = self.config.nmag
-        ncol = nmag - 1
+    nmag = config.nmag
+    ncol = nmag - 1
 
-        zreds = np.zeros(ngal, dtype=np.float32) - 1.0
-        refmags = np.zeros(ngal, dtype=np.float32)
+    # default values are all guaranteed to be out of range
+    chisqs = np.zeros((ngal, zbins_use.size), dtype=np.float32) + np.exp(np.max(lnchisqbins)) + 100.0
+    refmags = np.zeros(ngal, dtype=np.float32)
 
-        zbinmid = np.median(np.arange(zredstr.z.size, dtype=np.int32))
+    if (deepmode):
+        zlimmag = np.atleast_1d(redsequence_mstar(zredstr, zbins_use + config.bkg_zbinsize) - 2.5 * np.log10(0.01))
+    else:
+        zlimmag = np.atleast_1d(redsequence_mstar(zredstr, zbins_use + config.bkg_zbinsize) - 2.5 * np.log10(0.1))
 
-        # Loop
-        ctr = 0
-        p = 0
-        while ((ctr < ngal) and (p < npix)):
-            if master.ngals[subreg_indices[p]] == 0:
-                p += 1
+    bad, = np.where(zlimmag >= config.limmag_catalog)
+    zlimmag[bad] = config.limmag_catalog - 0.01
+    zlimmagpos = np.clip(((zlimmag - refmagrange[0]) * nrefmagbins / (refmagrange[1] - refmagrange[0])).astype(np.int32), 0, nrefmagbins - 1)
+    zlimmag = refmagbins[zlimmagpos] + config.bkg_refmagbinsize
+
+    zbinmid = np.median(np.arange(zredstr['z'].size - 1))
+
+    # And the main loop
+    ctr = 0
+    p_idx = 0
+    # This covers both loops
+    while ((ctr < ngal) and (p_idx < npix)):
+        # Read in a section of the galaxies, or the pixel
+        if not config.galfile_pixelized:
+            lo = ctr
+            hi = np.clip(ctr + natatime, None, ngal)
+
+            gals = GalaxyCatalog.from_fits_file(config.galfile, rows=np.arange(lo, hi))
+            ctr = hi + 1
+        else:
+            if master.ngals[subreg_indices[p_idx]] == 0:
+                p_idx += 1
                 continue
 
-            gals = GalaxyCatalog.from_galfile(self.config.galfile, nside=master.nside,
-                                              hpix=master.hpix[subreg_indices[p]],
-                                              border=0.0,
-                                              zredfile=self.config.zredfile)
+            gals = GalaxyCatalog.from_galfile(config.galfile, nside=master.nside,
+                                              hpix=master.hpix[subreg_indices[p_idx]], border=0.0)
 
-            use, = np.where(gals.chisq < maxchisq)
+            lo = ctr
+            hi = ctr + gals.size
 
-            if use.size > 0:
-                lo = ctr
-                hi = ctr + use.size
+            ctr += master.ngals[subreg_indices[p_idx]]
+            p_idx += 1
 
-                inds = np.arange(lo, hi, dtype=np.int64)
+        inds = np.arange(lo, hi)
 
-                refmags[inds] = gals.refmag[use]
-                zreds[inds] = gals.zred[use]
+        refmags[inds] = gals.refmag
 
-            ctr += master.ngals[subreg_indices[p]]
-            p += 1
+        for i, zbin in enumerate(zbins_use):
+            use, = np.where((gals.refmag > refmagrange[0]) &
+                            (gals.refmag < zlimmag[i]))
 
-        # Compute cic
-        sigma_g = np.zeros((nrefmagbins, nzredbins))
+            if (use.size > 0):
+                # Compute chisq at the redshift zbin
+                chisqs[inds[use], i] = compute_redsequence_chisq(zredstr, gals[use], zbin)
 
-        binsizes = self.config.bkg_refmagbinsize * self.config.bkg_zredbinsize
+    binsizes = config.bkg_refmagbinsize  * config.bkg_chisqbinsize
+    lnbinsizes = config.bkg_refmagbinsize * lnchisqbinsize
 
-        use, = np.where((zreds >= zredrange[0]) & (zreds < zredrange[1]) &
-                        (refmags > refmagrange[0]) & (refmags < refmagrange[1]))
+    sigma_g_sub = np.zeros((nrefmagbins, nchisqbins, zbins_use.size))
+    sigma_lng_sub = np.zeros((nrefmagbins, nlnchisqbins, zbins_use.size))
 
-        zredpos = (zreds[use] - zredrange[0]) * nzredbins / (zredrange[1] - zredrange[0])
+    for i, zbin in enumerate(zbins_use):
+        use, = np.where((chisqs[:, i] >= chisqrange[0]) &
+                        (chisqs[:, i] < chisqrange[1]) &
+                        (refmags >= refmagrange[0]) &
+                        (refmags < refmagrange[1]))
+        chisqpos = (chisqs[use, i] - chisqrange[0]) * nchisqbins / (chisqrange[1] - chisqrange[0])
         refmagpos = (refmags[use] - refmagrange[0]) * nrefmagbins / (refmagrange[1] - refmagrange[0])
 
         value = np.ones(use.size)
 
-        field = cic(value, zredpos, nzredbins, refmagpos, nrefmagbins, isolated=True)
+        field = cic(value, chisqpos, nchisqbins, refmagpos, nrefmagbins, isolated=True)
+        for j in range(nchisqbins):
+            sigma_g_sub[:, j, i] = field[:, j] / (areas * binsizes)
 
-        sigma_g[:, :] = field
+        lnchisqs = np.log(chisqs[:, i])
 
-        for j in range(nzredbins):
-            sigma_g[:, j] = np.clip(field[:, j], 0.1, None) / (areas * binsizes)
+        use, = np.where((lnchisqs >= lnchisqrange[0]) &
+                        (lnchisqs < lnchisqrange[1]) &
+                        (refmags >= refmagrange[0]) &
+                        (refmags < refmagrange[1]))
+        lnchisqpos = (lnchisqs[use] - lnchisqrange[0]) * nlnchisqbins / (lnchisqrange[1] - lnchisqrange[0])
+        refmagpos = (refmags[use] - refmagrange[0]) * nrefmagbins / (refmagrange[1] - refmagrange[0])
 
-        self.config.logger.info("Finished zred background in %.2f seconds" % (time.time() - starttime))
+        value = np.ones(use.size)
 
-        # Generate QA plots if requested
-        if hasattr(self.config, 'more_qa_plots') and self.config.more_qa_plots:
-            self._make_qa_plots(sigma_g, zredbins, refmagbins, areas, binsizes, galaxies=(refmags[use], zreds[use]))
+        field2 = cic(value, lnchisqpos, nlnchisqbins, refmagpos, nrefmagbins, isolated=True)
 
-        # save it
+        for j in range(nlnchisqbins):
+            sigma_lng_sub[:, j, i] = field2[:, j] / (areas * lnbinsizes)
 
-        dtype = [('zredbins', 'f4', zredbins.size),
-                 ('zredrange', 'f4', zredrange.size),
-                 ('zredbinsize', 'f4'),
-                 ('zred_index', 'i2'),
-                 ('refmag_index', 'i2'),
-                 ('refmagbins', 'f4', refmagbins.size),
-                 ('refmagrange', 'f4', refmagrange.size),
-                 ('refmagbinsize', 'f4'),
-                 ('areas', 'f4', areas.size),
-                 ('sigma_g', 'f4', sigma_g.shape)]
+    logger.info("Finished %.2f < z < %.2f in %.1f seconds" % (zbins_use[0], zbins_use[-1],
+                                                                          time.time() - starttime))
 
-        zred_bkg = Entry(np.zeros(1, dtype=dtype))
-        zred_bkg.zredbins[:] = zredbins
-        zred_bkg.zredrange[:] = zredrange
-        zred_bkg.zredbinsize = self.config.bkg_zredbinsize
-        zred_bkg.zred_index = 0
-        zred_bkg.refmag_index = 1
-        zred_bkg.refmagbins[:] = refmagbins
-        zred_bkg.refmagrange[:] = refmagrange
-        zred_bkg.refmagbinsize = self.config.bkg_refmagbinsize
-        zred_bkg.areas[:] = areas
-        zred_bkg.sigma_g[:, :] = sigma_g
+    return (zbinmark, sigma_g_sub, sigma_lng_sub)
 
-        zred_bkg.to_fits_file(self.config.bkgfile, extname='ZREDBKG', clobber=clobber)
 
-    def _make_qa_plots(self, sigma_g, zredbins, refmagbins, areas, binsizes, galaxies=None):
-        """
-        Generate QA plots for zred background calibration.
+def generate_background(config, clobber=False, natatime=100000, deepmode=False):
+    """
+    Generate the galaxy background using multiprocessing.  The number of
+    cores used is specified in config.calib_nproc, and the output
+    filename is specified in config.bkgfile.
 
-        Parameters
-        ----------
-        sigma_g: `np.array`
-            2D array of sigma_g(refmag, zred)
-        zredbins: `np.array`
-            Zred bin centers
-        refmagbins: `np.array`
-            Reference magnitude bin centers
-        areas: `np.array`
-            Area per refmag bin
-        binsizes: `float`
-            Bin size in refmag * zred space
-        galaxies: `tuple`, optional
-            Tuple of (refmags, zreds) for raw galaxy data plotting
-        """
-        import matplotlib
-        import matplotlib.pyplot as plt
+    Parameters
+    ----------
+    config: `redmapper.Configuration`
+    clobber: `bool`, optional
+       Overwrite any existing config.bkgfile file.  Default is False.
+    natatime: `int`, optional
+       Number of galaxies to read at a time.  Default is 100000.
+    deepmode: `bool`, optional
+       Run background to full depth of survey (rather than Lstar richness limit).
+       Default is False.
+    """
 
-        if not hasattr(self.config, 'plotpath') or self.config.plotpath is None:
-            self.config.logger.warning("config.plotpath not set, skipping QA plots")
-            return
+    if not clobber:
+        if os.path.isfile(config.bkgfile):
+            with fitsio.FITS(config.bkgfile) as fits:
+                if 'CHISQBKG' in [ext.get_extname() for ext in fits[1: ]]:
+                    logger.info("CHISQBKG already in %s and clobber is False" % (config.bkgfile))
+                    return
 
-        os.makedirs(self.config.plotpath, exist_ok=True)
+    # get the ranges
+    refmagrange = np.array([12.0, config.limmag_catalog])
+    nrefmagbins = np.ceil((refmagrange[1] - refmagrange[0]) / config.bkg_refmagbinsize).astype(np.int32)
+    refmagbins = np.arange(nrefmagbins) * config.bkg_refmagbinsize + refmagrange[0]
 
-        # Plot 1: sigma_g vs refmag at different zred slices
-        fig, axes = plt.subplots(2, 3, figsize=(15, 10))
-        nzredbins = zredbins.size
-        zred_indices = np.linspace(0, nzredbins - 1, 6, dtype=int)
+    chisqrange = np.array([0.0, config.chisq_max])
+    nchisqbins = np.ceil((chisqrange[1] - chisqrange[0]) / config.bkg_chisqbinsize).astype(np.int32)
+    chisqbins = np.arange(nchisqbins) * config.bkg_chisqbinsize + chisqrange[0]
+
+    lnchisqbinsize = 0.2
+    lnchisqrange = np.array([-2.0, 6.0])
+    nlnchisqbins = np.ceil((lnchisqrange[1] - lnchisqrange[0]) / lnchisqbinsize).astype(np.int32)
+    lnchisqbins = np.arange(nlnchisqbins) * lnchisqbinsize + lnchisqrange[0]
+
+    nzbins = np.ceil((config.zrange[1] - config.zrange[0]) / config.bkg_zbinsize).astype(np.int32)
+    zbins = np.arange(nzbins) * config.bkg_zbinsize + config.zrange[0]
+
+    # this is the background hist
+    sigma_g = np.zeros((nrefmagbins, nchisqbins, nzbins))
+    sigma_lng = np.zeros((nrefmagbins, nlnchisqbins, nzbins))
+
+    # We need the areas from the depth map
+    if config.depthfile is not None:
+        depth_data = depthmap.read_depth_map(config)
+        areas = depthmap.compute_areas(depth_data, refmagbins)
+    else:
+        areas = np.zeros(refmagbins.size) + config.area
+
+    # Split into bins for parallel running
+    logrange = np.log(np.array([config.zrange[0] - 0.001, config.zrange[1] + 0.001]))
+    logbinsize = (logrange[1] - logrange[0]) / config.calib_nproc
+    zedges = (np.exp(logrange[0]) + np.exp(logrange[1])) - np.exp(logrange[0] + np.arange(config.calib_nproc + 1) * logbinsize)
+
+    config_safe = config.copy()
+    config_safe.cosmo = None
+
+    worker_list = []
+    for i in range(config.calib_nproc):
+        ubins, = np.where((zbins < zedges[i]) & (zbins > zedges[i + 1]))
+        gd, = np.where(ubins < zbins.size)
+
+        # If we have more processes than bins, some of these will be empty
+        # and this prevents us from adding them to the list
+        if gd.size == 0:
+            continue
+
+        ubins = ubins[gd]
+
+        zbinmark = np.zeros(zbins.size, dtype=bool)
+        zbinmark[ubins] = True
         
-        for idx, (ax, zi) in enumerate(zip(axes.flat, zred_indices)):
-            ax.step(refmagbins, sigma_g[:, zi], 'b-', linewidth=1.5, where='mid')
-            ax.set_xlabel('refmag')
-            ax.set_ylabel(r'$\Sigma_g$ [deg$^{-2}$]')
-            ax.set_title(f'zred = {zredbins[zi]:.3f}')
-            ax.set_yscale('log')
-            ax.grid(True, alpha=0.3)
-            ax.set_ylim(bottom=1e-2)
+        p = {
+            'config': config_safe, 'zbins': zbins, 'refmagrange': refmagrange, 'nrefmagbins': nrefmagbins,
+            'refmagbins': refmagbins, 'chisqrange': chisqrange, 'nchisqbins': nchisqbins,
+            'chisqbins': chisqbins, 'lnchisqrange': lnchisqrange, 'nlnchisqbins': nlnchisqbins,
+            'lnchisqbinsize': lnchisqbinsize, 'lnchisqbins': lnchisqbins, 'areas': areas,
+            'deepmode': deepmode, 'natatime': natatime
+        }
 
-        plt.tight_layout()
-        plt.savefig(os.path.join(self.config.plotpath, 'zredbkg_sigma_g_vs_refmag.png'), dpi=300)
-        plt.close()
-        self.config.logger.info("Saved QA plot: zredbkg_sigma_g_vs_refmag.png")
+        worker_list.append((zbinmark, p))
 
-        # Plot 2: sigma_g vs zred at different refmag slices
-        fig, axes = plt.subplots(2, 3, figsize=(15, 10))
-        nrefmagbins = refmagbins.size
-        refmag_indices = np.linspace(0, nrefmagbins - 1, 6, dtype=int)
-        
-        for idx, (ax, ri) in enumerate(zip(axes.flat, refmag_indices)):
-            ax.step(zredbins, sigma_g[ri, :], 'r-', linewidth=1.5, where='mid')
-            ax.set_xlabel('zred')
-            ax.set_ylabel(r'$\Sigma_g$ [deg$^{-2}$]')
-            ax.set_title(f'refmag = {refmagbins[ri]:.2f}')
-            ax.set_yscale('log')
-            ax.grid(True, alpha=0.3)
-            ax.set_ylim(bottom=1e-2)
+    mp_ctx = multiprocessing.get_context("fork")
+    pool = mp_ctx.Pool(processes=config.calib_nproc)
+    retvals = pool.map(_background_worker, worker_list, chunksize=1)
+    pool.close()
+    pool.join()
 
-        plt.tight_layout()
-        plt.savefig(os.path.join(self.config.plotpath, 'zredbkg_sigma_g_vs_zred.png'), dpi=300)
-        plt.close()
-        self.config.logger.info("Saved QA plot: zredbkg_sigma_g_vs_zred.png")
+    # And store the results
+    for zbinmark, sigma_g_sub, sigma_lng_sub in retvals:
+        sigma_g[:, :, zbinmark] = sigma_g_sub
+        sigma_lng[:, :, zbinmark] = sigma_lng_sub
 
-        # Plot 3: Raw galaxy distribution (if provided)
-        fig, ax = plt.subplots(figsize=(12, 8))
-        hb = ax.hexbin(galaxies[0], galaxies[1], gridsize=50, bins='log', cmap='Reds',
-                        extent=[refmagbins[0], refmagbins[-1], zredbins[0], zredbins[-1]])
+    # Generate QA plots if requested
+    if hasattr(config, 'more_qa_plots') and config.more_qa_plots:
+        _make_qa_plots_background(config, sigma_g, sigma_lng, refmagrange, chisqrange, nzbins, zbins)
+
+    # And save them
+    dtype = [('zbins', 'f4', zbins.size),
+             ('zrange', 'f4', 2),
+             ('zbinsize', 'f4'),
+             ('chisq_index', 'i4'),
+             ('refmag_index', 'i4'),
+             ('chisqbins', 'f4', chisqbins.size),
+             ('chisqrange', 'f4', 2),
+             ('chisqbinsize', 'f4'),
+             ('lnchisqbins', 'f4', lnchisqbins.size),
+             ('lnchisqrange', 'f4', 2),
+             ('lnchisqbinsize', 'f4'),
+             ('areas', 'f4', areas.size),
+             ('refmagbins', 'f4', refmagbins.size),
+             ('refmagrange', 'f4', 2),
+             ('refmagbinsize', 'f4'),
+             ('sigma_g', 'f4', sigma_g.shape),
+             ('sigma_lng', 'f4', sigma_lng.shape)]
+
+    chisq_bkg = Entry(np.zeros(1, dtype=dtype))
+    chisq_bkg.zbins[:] = zbins
+    chisq_bkg.zrange[:] = config.zrange
+    chisq_bkg.zbinsize = config.bkg_zbinsize
+    chisq_bkg.chisq_index = 0
+    chisq_bkg.refmag_index = 1
+    chisq_bkg.chisqbins[:] = chisqbins
+    chisq_bkg.chisqrange[:] = chisqrange
+    chisq_bkg.chisqbinsize = config.bkg_chisqbinsize
+    chisq_bkg.lnchisqbins[:] = lnchisqbins
+    chisq_bkg.lnchisqrange[:] = lnchisqrange
+    chisq_bkg.lnchisqbinsize = lnchisqbinsize
+    chisq_bkg.areas[:] = areas
+    chisq_bkg.refmagbins[:] = refmagbins
+    chisq_bkg.refmagrange[:] = refmagrange
+    chisq_bkg.refmagbinsize = config.bkg_refmagbinsize
+    chisq_bkg.sigma_g[:, :] = sigma_g
+    chisq_bkg.sigma_lng[:, :] = sigma_lng
+
+    chisq_bkg.to_fits_file(config.bkgfile, extname='CHISQBKG', clobber=clobber)
+
+
+def _make_qa_plots_zred_background(config, sigma_g, zredbins, refmagbins, areas, binsizes, galaxies=None):
+    """
+    Generate QA plots for zred background calibration.
+    """
+    import matplotlib
+    import matplotlib.pyplot as plt
+
+    if not hasattr(config, 'plotpath') or config.plotpath is None:
+        logger.warning("config.plotpath not set, skipping QA plots")
+        return
+
+    os.makedirs(config.plotpath, exist_ok=True)
+
+    # Plot 1: sigma_g vs refmag at different zred slices
+    fig, axes = plt.subplots(2, 3, figsize=(15, 10))
+    nzredbins = zredbins.size
+    zred_indices = np.linspace(0, nzredbins - 1, 6, dtype=int)
+    
+    for idx, (ax, zi) in enumerate(zip(axes.flat, zred_indices)):
+        ax.step(refmagbins, sigma_g[:, zi], 'b-', linewidth=1.5, where='mid')
         ax.set_xlabel('refmag')
-        ax.set_ylabel('zred')
-        ax.set_title('Raw Galaxy Distribution (Hexbin)')
-        plt.colorbar(hb, ax=ax, label='log10(N)')
-        
-        plt.tight_layout()
-        plt.savefig(os.path.join(self.config.plotpath, 'zredbkg_raw_hexbin.png'), dpi=300)
-        plt.close()
-        self.config.logger.info("Saved QA plot: zredbkg_raw_hexbin.png")
-
-        # Plot 4: Total background density vs zred
-        fig, ax = plt.subplots(figsize=(10, 6))
-        n_total = np.sum(sigma_g, axis=0) * self.config.bkg_refmagbinsize
-        ax.step(zredbins, n_total, 'k-', linewidth=2, where='mid')
-        ax.set_xlabel('zred')
-        ax.set_ylabel(r'Total $\Sigma_g$ [deg$^{-2}$]')
-        ax.set_title('Total Background Density vs Zred')
+        ax.set_ylabel(r'$\Sigma_g$ [deg$^{-2}$]')
+        ax.set_title(f'zred = {zredbins[zi]:.3f}')
         ax.set_yscale('log')
         ax.grid(True, alpha=0.3)
+        ax.set_ylim(bottom=1e-2)
 
-        plt.tight_layout()
-        plt.savefig(os.path.join(self.config.plotpath, 'zredbkg_total_vs_zred.png'), dpi=300)
-        plt.close()
-        self.config.logger.info("Saved QA plot: zredbkg_total_vs_zred.png")
+    plt.tight_layout()
+    plt.savefig(os.path.join(config.plotpath, 'zredbkg_sigma_g_vs_refmag.png'), dpi=300)
+    plt.close()
+    logger.info("Saved QA plot: zredbkg_sigma_g_vs_refmag.png")
 
-        # Plot 5: Area vs refmag
-        fig, ax = plt.subplots(figsize=(10, 6))
-        ax.step(refmagbins, areas, 'g-', linewidth=2, where='mid')
-        ax.set_xlabel('refmag')
-        ax.set_ylabel('Area [deg$^2$]')
-        ax.set_title('Effective Area vs Reference Magnitude')
+    # Plot 2: sigma_g vs zred at different refmag slices
+    fig, axes = plt.subplots(2, 3, figsize=(15, 10))
+    nrefmagbins = refmagbins.size
+    refmag_indices = np.linspace(0, nrefmagbins - 1, 6, dtype=int)
+    
+    for idx, (ax, ri) in enumerate(zip(axes.flat, refmag_indices)):
+        ax.step(zredbins, sigma_g[ri, :], 'r-', linewidth=1.5, where='mid')
+        ax.set_xlabel('zred')
+        ax.set_ylabel(r'$\Sigma_g$ [deg$^{-2}$]')
+        ax.set_title(f'refmag = {refmagbins[ri]:.2f}')
+        ax.set_yscale('log')
         ax.grid(True, alpha=0.3)
+        ax.set_ylim(bottom=1e-2)
 
-        plt.tight_layout()
-        plt.savefig(os.path.join(self.config.plotpath, 'zredbkg_area_vs_refmag.png'), dpi=300)
-        plt.close()
-        self.config.logger.info("Saved QA plot: zredbkg_area_vs_refmag.png")
+    plt.tight_layout()
+    plt.savefig(os.path.join(config.plotpath, 'zredbkg_sigma_g_vs_zred.png'), dpi=300)
+    plt.close()
+    logger.info("Saved QA plot: zredbkg_sigma_g_vs_zred.png")
+
+    # Plot 3: Raw galaxy distribution (if provided)
+    fig, ax = plt.subplots(figsize=(12, 8))
+    hb = ax.hexbin(galaxies[0], galaxies[1], gridsize=50, bins='log', cmap='Reds',
+                    extent=[refmagbins[0], refmagbins[-1], zredbins[0], zredbins[-1]])
+    ax.set_xlabel('refmag')
+    ax.set_ylabel('zred')
+    ax.set_title('Raw Galaxy Distribution (Hexbin)')
+    plt.colorbar(hb, ax=ax, label='log10(N)')
+    
+    plt.tight_layout()
+    plt.savefig(os.path.join(config.plotpath, 'zredbkg_raw_hexbin.png'), dpi=300)
+    plt.close()
+    logger.info("Saved QA plot: zredbkg_raw_hexbin.png")
+
+    # Plot 4: Total background density vs zred
+    fig, ax = plt.subplots(figsize=(10, 6))
+    n_total = np.sum(sigma_g, axis=0) * config.bkg_refmagbinsize
+    ax.step(zredbins, n_total, 'k-', linewidth=2, where='mid')
+    ax.set_xlabel('zred')
+    ax.set_ylabel(r'Total $\Sigma_g$ [deg$^{-2}$]')
+    ax.set_title('Total Background Density vs Zred')
+    ax.set_yscale('log')
+    ax.grid(True, alpha=0.3)
+
+    plt.tight_layout()
+    plt.savefig(os.path.join(config.plotpath, 'zredbkg_total_vs_zred.png'), dpi=300)
+    plt.close()
+    logger.info("Saved QA plot: zredbkg_total_vs_zred.png")
+
+    # Plot 5: Area vs refmag
+    fig, ax = plt.subplots(figsize=(10, 6))
+    ax.step(refmagbins, areas, 'g-', linewidth=2, where='mid')
+    ax.set_xlabel('refmag')
+    ax.set_ylabel('Area [deg$^2$]')
+    ax.set_title('Effective Area vs Reference Magnitude')
+    ax.grid(True, alpha=0.3)
+
+    plt.tight_layout()
+    plt.savefig(os.path.join(config.plotpath, 'zredbkg_area_vs_refmag.png'), dpi=300)
+    plt.close()
+    logger.info("Saved QA plot: zredbkg_area_vs_refmag.png")
+
+def generate_zred_background(config, clobber=False, natatime=100000):
+    """
+    Generate the zred galaxy background.  The output filename is specified
+    in config.bkgfile.
+
+    Parameters
+    ----------
+    config: `redmapper.Configuration`
+    clobber: `bool`, optional
+       Overwrite any existing config.bkgfile file.  Default is False.
+    natatime: `int`, optional
+       Number of galaxies to read at a time.  Default is 100000
+    """
+
+    if not os.path.isfile(config.zredfile):
+        raise RuntimeError("Must run generate_zred_background with a zred file")
+
+    if not clobber:
+        if os.path.isfile(config.bkgfile):
+            with fitsio.FITS(config.bkgfile) as fits:
+                if 'ZREDBKG' in [ext.get_extname() for ext in fits[1: ]]:
+                    logger.info("ZREDBKG already in %s and clobber is False" % (config.bkgfile))
+                    return
+
+    # Read in zred parameters
+    zredstr = read_redsequence(config.parfile, fine=True, zrange=config.zrange)
+
+    # Set ranges
+    refmagrange = np.array([12.0, config.limmag_catalog])
+    nrefmagbins = np.ceil((refmagrange[1] - refmagrange[0]) / config.bkg_refmagbinsize).astype(np.int32)
+    refmagbins = np.arange(nrefmagbins) * config.bkg_refmagbinsize + refmagrange[0]
+
+    zredrange = np.array([zredstr['z'][0], zredstr['z'][-2] + (zredstr['z'][1] - zredstr['z'][0])])
+    nzredbins = np.ceil((zredrange[1] - zredrange[0]) / config.bkg_zredbinsize).astype(np.int32)
+    zredbins = np.arange(nzredbins) * config.bkg_zredbinsize + zredrange[0]
+
+    # Compute the areas...
+    # This takes into account the configured sub-region
+    if config.depthfile is not None:
+        depth_data = depthmap.read_depth_map(config)
+        areas = depthmap.compute_areas(depth_data, refmagbins)
+    else:
+        areas = np.zeros(refmagbins.size) + config.area
+
+    maxchisq = config.wcen_zred_chisq_max
+
+    # Prepare pixels (if necessary) and count galaxies
+
+    if not config.galfile_pixelized:
+        raise ValueError("Only pixelized galfiles are supported at this moment.")
+
+    master = Entry.from_fits_file(config.galfile)
+
+    if len(config.hpix) > 0:
+        # We need to take a sub-region
+        theta, phi = hpg.pixel_to_angle(master.nside, master.hpix, lonlat=False, nest=False)
+        ipring_big = hpg.angle_to_pixel(config.nside, theta, phi, lonlat=False, nest=False)
+
+        _, subreg_indices = esutil.numpy_util.match(config.hpix, ipring_big)
+        subreg_indices = np.unique(subreg_indices)
+    else:
+        subreg_indices = np.arange(master.hpix.size)
+
+    ngal = np.sum(master.ngals[subreg_indices])
+    npix = subreg_indices.size
+
+    starttime = time.time()
+
+    nmag = config.nmag
+    ncol = nmag - 1
+
+    zreds = np.zeros(ngal, dtype=np.float32) - 1.0
+    refmags = np.zeros(ngal, dtype=np.float32)
+
+    zbinmid = np.median(np.arange(zredstr['z'].size, dtype=np.int32))
+
+    # Loop
+    ctr = 0
+    p = 0
+    while ((ctr < ngal) and (p < npix)):
+        if master.ngals[subreg_indices[p]] == 0:
+            p += 1
+            continue
+
+        gals = GalaxyCatalog.from_galfile(config.galfile, nside=master.nside,
+                                          hpix=master.hpix[subreg_indices[p]],
+                                          border=0.0,
+                                          zredfile=config.zredfile)
+
+        use, = np.where(gals.chisq < maxchisq)
+
+        if use.size > 0:
+            lo = ctr
+            hi = ctr + use.size
+
+            inds = np.arange(lo, hi, dtype=np.int64)
+
+            refmags[inds] = gals.refmag[use]
+            zreds[inds] = gals.zred[use]
+
+        ctr += master.ngals[subreg_indices[p]]
+        p += 1
+
+    # Compute cic
+    sigma_g = np.zeros((nrefmagbins, nzredbins))
+
+    binsizes = config.bkg_refmagbinsize * config.bkg_zredbinsize
+
+    use, = np.where((zreds >= zredrange[0]) & (zreds < zredrange[1]) &
+                    (refmags > refmagrange[0]) & (refmags < refmagrange[1]))
+
+    zredpos = (zreds[use] - zredrange[0]) * nzredbins / (zredrange[1] - zredrange[0])
+    refmagpos = (refmags[use] - refmagrange[0]) * nrefmagbins / (refmagrange[1] - refmagrange[0])
+
+    value = np.ones(use.size)
+
+    field = cic(value, zredpos, nzredbins, refmagpos, nrefmagbins, isolated=True)
+
+    sigma_g[:, :] = field
+
+    for j in range(nzredbins):
+        sigma_g[:, j] = np.clip(field[:, j], 0.1, None) / (areas * binsizes)
+
+    logger.info("Finished zred background in %.2f seconds" % (time.time() - starttime))
+
+    # Generate QA plots if requested
+    if hasattr(config, 'more_qa_plots') and config.more_qa_plots:
+        _make_qa_plots_zred_background(config, sigma_g, zredbins, refmagbins, areas, binsizes, galaxies=(refmags[use], zreds[use]))
+
+    # save it
+
+    dtype = [('zredbins', 'f4', zredbins.size),
+             ('zredrange', 'f4', zredrange.size),
+             ('zredbinsize', 'f4'),
+             ('zred_index', 'i2'),
+             ('refmag_index', 'i2'),
+             ('refmagbins', 'f4', refmagbins.size),
+             ('refmagrange', 'f4', refmagrange.size),
+             ('refmagbinsize', 'f4'),
+             ('areas', 'f4', areas.size),
+             ('sigma_g', 'f4', sigma_g.shape)]
+
+    zred_bkg = Entry(np.zeros(1, dtype=dtype))
+    zred_bkg.zredbins[:] = zredbins
+    zred_bkg.zredrange[:] = zredrange
+    zred_bkg.zredbinsize = config.bkg_zredbinsize
+    zred_bkg.zred_index = 0
+    zred_bkg.refmag_index = 1
+    zred_bkg.refmagbins[:] = refmagbins
+    zred_bkg.refmagrange[:] = refmagrange
+    zred_bkg.refmagbinsize = config.bkg_refmagbinsize
+    zred_bkg.areas[:] = areas
+    zred_bkg.sigma_g[:, :] = sigma_g
+
+    zred_bkg.to_fits_file(config.bkgfile, extname='ZREDBKG', clobber=clobber)
 

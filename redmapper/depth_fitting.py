@@ -1,76 +1,55 @@
-"""Classes and routines for simple fits to galaxy catalog depth.
-
+"""Functions for simple fits to galaxy catalog depth.
 """
 import fitsio
 import numpy as np
 import esutil
 import scipy.optimize
 
-
-class DepthFunction(object):
+def depth_function(x, mag, mag_err, zp, nsig, max_p1=1e10):
     """
-    Class to implement function for fitting depth.
+    Compute total cost function for f(x)
 
+    Parameters
+    ----------
+    x: `np.array`, length 2
+       Float array of fit parameters
+    mag: `np.array`
+       Float array of magnitudes
+    mag_err: `np.array`
+       Float array of magnitude errors
+    zp: `float`
+       Reference zeropoint
+    nsig: `float`
+       Number of sigma to compute depth limit
+    max_p1: `float`, optional
+       Maximum value for parameter x[1]. Default is 1e10.
+
+    Returns
+    -------
+    t: `float`
+       Total cost function at parameters x
     """
-    def __init__(self,mag,magErr,zp,nSig):
-        """
-        Instantiate DepthFunction class.
+    const = 2.5/np.log(10.0)
 
-        Parameters
-        ----------
-        mag: `np.array`
-           Float array of magnitudes
-        magErr: `np.array`
-           Float array of magnitude errors
-        zp: `float`
-           Reference zeropoint
-        nSig: `float`
-           Number of sigma to compute depth limit
-        """
-        self.const = 2.5/np.log(10.0)
+    if ((x[1] < 0.0) or
+        (x[1] > max_p1)):
+        return 1e10
 
-        self.mag = mag
-        self.magErr = magErr
-        self.zp = zp
-        self.nSig = nSig
+    f1lim = 10.**((x[0] - zp)/(-2.5))
+    fsky1 = ((f1lim**2. * x[1])/(nsig**2.) - f1lim)
 
-        self.max_p1 = 1e10
+    if (fsky1 < 0.0):
+        return 1e10
 
-    def __call__(self, x):
-        """
-        Compute total cost function for f(x)
+    tflux = x[1]*10.**((mag - zp)/(-2.5))
+    err = np.sqrt(fsky1*x[1] + tflux)
 
-        Parameters
-        ----------
-        x: `np.array`, length 2
-           Float array of fit parameters
+    t=np.sum(np.abs(const*(err/tflux) - mag_err))
 
-        Returns
-        -------
-        t: `float`
-           Total cost function at parameters x
-        """
+    if not np.isfinite(t):
+        t=1e10
 
-        if ((x[1] < 0.0) or
-            (x[1] > self.max_p1)):
-            return 1e10
-
-        f1lim = 10.**((x[0] - self.zp)/(-2.5))
-        fsky1 = ((f1lim**2. * x[1])/(self.nSig**2.) - f1lim)
-
-        if (fsky1 < 0.0):
-            return 1e10
-
-        tflux = x[1]*10.**((self.mag - self.zp)/(-2.5))
-        err = np.sqrt(fsky1*x[1] + tflux)
-
-        # apply the constant here, not to the magErr, which was dumb
-        t=np.sum(np.abs(self.const*(err/tflux) - self.magErr))
-
-        if not np.isfinite(t):
-            t=1e10
-
-        return t
+    return t
 
 # FIXME: want to be able to reuse code from utilities!
 def applyErrorModel(pars, magIn, noNoise=False, lnscat=None):
@@ -112,7 +91,6 @@ def applyErrorModel(pars, magIn, noNoise=False, lnscat=None):
     magErr = (2.5/np.log(10.)) * (noise/flux)
 
     return mag, magErr
-
 
 def calcErrorModel(_mag, _magErr, nSig=10.0, doPlot=False, nTrial=100, calcErr=False,
                    useBoot=False, snCut=5.0, zp=22.5, oldIDL=False):
@@ -177,9 +155,6 @@ def calcErrorModel(_mag, _magErr, nSig=10.0, doPlot=False, nTrial=100, calcErr=F
         else:
             return (-1,1)
 
-    # extra const here?
-    dFunc = DepthFunction(mag[gd], magErr[gd], zp, nSig)
-
     # get the reference limiting mag
     test,=np.where((magErr[gd] > const/nSig) &
                    (magErr[gd] < 1.1*const/nSig))
@@ -205,18 +180,20 @@ def calcErrorModel(_mag, _magErr, nSig=10.0, doPlot=False, nTrial=100, calcErr=F
 
     tTest=np.zeros(nSteps)
     for i,expTime in enumerate(expTimes):
-        # call a function...
-        dFunc.max_p1 = expTime*2.
-        tTest[i] = dFunc([limmagStart, expTime])
+        tTest[i] = depth_function(
+            [limmagStart, expTime], mag[gd], magErr[gd], zp, nSig, max_p1=expTime*2.
+        )
 
     ind = np.argmin(tTest)
 
     p0=np.array([limmagStart, expTimes[ind]])
 
     # try single fit
-    dFunc.max_p1 = 10.0*p0[1]
+    max_p1 = 10.0*p0[1]
+    
+    func_to_fit = lambda x: depth_function(x, mag[gd], magErr[gd], zp, nSig, max_p1=max_p1)
 
-    ret = scipy.optimize.fmin(dFunc, p0,disp=False, full_output=True,retall=False)
+    ret = scipy.optimize.fmin(func_to_fit, p0, disp=False, full_output=True, retall=False)
 
     # check for convergence here...
     if (ret[-1] > 0):
@@ -238,18 +215,17 @@ def calcErrorModel(_mag, _magErr, nSig=10.0, doPlot=False, nTrial=100, calcErr=F
                            ('EXPTIME_ERR','f4'),
                            ('FRAC_OUT','f4')])
     pars['EXPTIME'] = p[1]
-    pars['ZP'] = dFunc.zp
+    pars['ZP'] = zp
     pars['LIMMAG'] = p[0]
-    pars['NSIG'] = dFunc.nSig
-    pars['FLUX1_LIM'] = 10.**((p[0] - dFunc.zp)/(-2.5))
-    pars['FSKY1'] = (pars['FLUX1_LIM'][0]**2.*p[1])/(dFunc.nSig**2.) - pars['FLUX1_LIM'][0]
+    pars['NSIG'] = nSig
+    pars['FLUX1_LIM'] = 10.**((p[0] - zp)/(-2.5))
+    pars['FSKY1'] = (pars['FLUX1_LIM'][0]**2.*p[1])/(nSig**2.) - pars['FLUX1_LIM'][0]
 
     # compute frac_out, the fraction of outliers
-    testMag, testMagErr = applyErrorModel(pars, dFunc.mag, noNoise=True)
+    testMag, testMagErr = applyErrorModel(pars, mag[gd], noNoise=True)
 
-    out,=np.where(np.abs(testMagErr - dFunc.magErr) > 0.005)
+    out,=np.where(np.abs(testMagErr - magErr[gd]) > 0.005)
     pars['FRAC_OUT'] = np.float64(out.size)/np.float64(gd.size)
-
 
     if (calcErr):
         limMags=np.zeros(nTrial,dtype=np.float32)
@@ -259,17 +235,17 @@ def calcErrorModel(_mag, _magErr, nSig=10.0, doPlot=False, nTrial=100, calcErr=F
 
         for i in range(nTrial):
             r=np.int32(np.random.random(gd.size)*gd.size)
-            dFunc.mag = mag[gd[r]]
-            dFunc.magErr = magErr[gd[r]]
+            
+            func_to_fit_boot = lambda x: depth_function(x, mag[gd[r]], magErr[gd[r]], zp, nSig, max_p1=max_p1)
 
-            ret = scipy.optimize.fmin(dFunc, p0, disp=False, full_output=True,retall=False)
+            ret = scipy.optimize.fmin(func_to_fit_boot, p0, disp=False, full_output=True, retall=False)
             if (ret[4] > 0) :
-                p = p0
+                p_boot = p0
             else:
-                p = ret[0]
+                p_boot = ret[0]
 
-            limMags[i] = p[0]
-            expTimes[i] = p[1]
+            limMags[i] = p_boot[0]
+            expTimes[i] = p_boot[1]
 
         # use IQD for errors
         st=np.argsort(limMags)
@@ -281,6 +257,7 @@ def calcErrorModel(_mag, _magErr, nSig=10.0, doPlot=False, nTrial=100, calcErr=F
             pars['EXPTIME'] = np.median(expTimes)
 
     if (doPlot):
+        import matplotlib.pyplot as plt
         fig=plt.figure(1)
         fig.clf()
         ax=fig.add_subplot(111)
@@ -296,8 +273,8 @@ def calcErrorModel(_mag, _magErr, nSig=10.0, doPlot=False, nTrial=100, calcErr=F
             for i in range(nTrial):
                 testPars['LIMMAG'] = limMags[i]
                 testPars['EXPTIME'] = expTimes[i]
-                testPars['FLUX1_LIM'] = 10.**((limMags[i] - dFunc.zp)/(-2.5))
-                testPars['FSKY1'] = (testPars['FLUX1_LIM'][0]**2.*expTimes[i])/(dFunc.nSig**2.) - testPars['FLUX1_LIM'][0]
+                testPars['FLUX1_LIM'] = 10.**((limMags[i] - zp)/(-2.5))
+                testPars['FSKY1'] = (testPars['FLUX1_LIM'][0]**2.*expTimes[i])/(nSig**2.) - testPars['FLUX1_LIM'][0]
                 mTest, mErrTest = applyErrorModel(testPars, testMag[st], noNoise=True)
                 ax.plot(mTest, mErrTest, '-',color=alphaColor)
 
@@ -320,76 +297,75 @@ def calcErrorModel(_mag, _magErr, nSig=10.0, doPlot=False, nTrial=100, calcErr=F
         # success
         return (pars,0)
 
-class DepthLim(object):
+def compute_depthlim_pars(mag, mag_err, max_gals=100000):
     """
-    Class to compute depth limits from data, if external map is not available.
+    Compute global depth limit parameters from data, if external map is not available.
 
-    This class is used to compute depth in realtime from data.
+    This is used to compute depth in realtime from data, returning default global parameters
+    that will be used if a local fit cannot be performed.
+
+    Parameters
+    ----------
+    mag: `np.array`
+       Float array of magnitudes from a large region of sky
+    mag_err: `np.array`
+       Float array of magnitude errors from a large region of sky
+    max_gals: `int`, optional
+       Maximum number of galaxies to sample to get global default fit. Default is 100000.
+
+    Returns
+    -------
+    initpars: `np.ndarray`
+       Error model parameters for the global fit.
+
+    Raises
+    ------
+    RuntimeError:
+       If a global fit cannot be performed.
     """
-    def __init__(self, mag, mag_err, max_gals=100000):
-        """
-        Instantiate DepthLim object.
 
-        Upon initialization this will compute default global parameters that
-        will be used if a fit cannot be performed.
+    if mag.size < max_gals:
+        use = np.arange(mag.size)
+    else:
+        use = np.random.choice(np.arange(mag.size), size=max_gals, replace=False)
 
-        Parameters
-        ----------
-        mag: `np.array`
-           Float array of magnitudes from a large region of sky
-        mag_err: `np.array`
-           Float array of magnitude errors from a large region of sky
-        max_gals: `int`
-           Maximum number of galaxies to sample to get global default fit.
+    initpars, fail = calcErrorModel(mag[use], mag_err[use], calcErr=False)
 
-        Raises
-        ------
-        RuntimeError:
-           If a global fit cannot be performed.
-        """
+    if fail:
+        raise RuntimeError("Complete failure on getting limiting mag fit")
+        
+    return initpars
 
-        # This gets a global fit, to use as a fallback
+def apply_depthlim(maskgals, mag, mag_err, initpars):
+    """
+    Calculate mask depth empirically for a set of galaxies.
 
-        if mag.size < max_gals:
-            use = np.arange(mag.size)
-        else:
-            use = np.random.choice(np.arange(mag.size), size=max_gals, replace=False)
+    This will modify maskgals.limmag, maskgals.exptime, maskgals.zp,
+    maskgals.nsig to the fit values (or global if fit cannot be performed).
 
-        self.initpars, fail = calcErrorModel(mag[use], mag_err[use], calcErr=False)
+    Parameters
+    ----------
+    maskgals: `redmapper.Catalog`
+       maskgals catalog
+    mag: `np.array`
+       Float array of local magnitudes
+    mag_err: `np.array`
+       Float array of local magnitude errors
+    initpars: `np.ndarray`
+       Global depth limit parameters to use as a fallback if the local fit fails.
+    """
 
-        if fail:
-            raise RuntimeError("Complete failure on getting limiting mag fit")
+    limpars, fail = calcErrorModel(mag, mag_err, calcErr=False)
 
-    def calc_maskdepth(self, maskgals, mag, mag_err):
-        """
-        Calculate mask depth empirically for a set of galaxies.
+    if fail:
+        maskgals.limmag[:] = initpars['LIMMAG']
+        maskgals.exptime[:] = initpars['EXPTIME']
+        maskgals.zp[0] = initpars['ZP']
+        maskgals.nsig[0] = initpars['NSIG']
+    else:
+        maskgals.limmag[:] = limpars['LIMMAG']
+        maskgals.exptime[:] = limpars['EXPTIME']
+        maskgals.zp[0] = limpars['ZP'][0]
+        maskgals.nsig[0] = limpars['NSIG'][0]
 
-        This will modify maskgals.limmag, maskgals.exptime, maskgals.zp,
-        maskgals.nsig to the fit values (or global if fit cannot be performed).
-
-        Parameters
-        ----------
-        maskgals: `redmapper.Catalog`
-           maskgals catalog
-        mag: `np.array`
-           Float array of local magnitudes
-        mag_err: `np.array`
-           Float array of local magnitude errors
-        """
-
-        limpars, fail = calcErrorModel(mag, mag_err, calcErr=False)
-
-        if fail:
-            maskgals.limmag[:] = self.initpars['LIMMAG']
-            maskgals.exptime[:] = self.initpars['EXPTIME']
-            maskgals.zp[0] = self.initpars['ZP']
-            maskgals.nsig[0] = self.initpars['NSIG']
-
-        else:
-            maskgals.limmag[:] = limpars['LIMMAG']
-            maskgals.exptime[:] = limpars['EXPTIME']
-            maskgals.zp[0] = limpars['ZP'][0]
-            maskgals.nsig[0] = limpars['NSIG'][0]
-
-        return
-
+    return

@@ -8,7 +8,7 @@ import shutil
 import fitsio
 import os
 
-from redmapper.pipeline import RedmapperConsolidateTask
+from redmapper.pipeline import run_redmapper_consolidate_task
 from redmapper import Configuration, ClusterCatalog
 
 class ConsolidateTestCase(unittest.TestCase):
@@ -79,8 +79,7 @@ class ConsolidateTestCase(unittest.TestCase):
         config.output_yaml(config_file)
 
         # Consolidate them together...
-        consol = RedmapperConsolidateTask(config_file)
-        consol.run(match_spec=False, do_plots=False)
+        run_redmapper_consolidate_task(config_file, match_spec=False, do_plots=False)
 
         # Check that the ordering is correct, etc.
         catfile = config.redmapper_filename('redmapper_v%s_lgt20_catalog' % (config.version))

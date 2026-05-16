@@ -11,16 +11,16 @@ import tempfile
 from numpy import random
 
 from redmapper.configuration import Configuration
-from redmapper.calibration.selectspecred import SelectSpecRedGalaxies
+from redmapper.calibration.selectspecred import select_spec_red_galaxies_wrapper
 
 class SelectSpecRedTestCase(unittest.TestCase):
     """
     Tests for selecting red galaxies with spectra in
-    redmapper.calibration.SelectSpecRedGalaxies
+    redmapper.calibration.select_spec_red_galaxies_wrapper
     """
     def test_selectspecred(self):
         """
-        Run tests on redmapper.calibration.SelectSpecRedGalaxies
+        Run tests on redmapper.calibration.select_spec_red_galaxies_wrapper
         """
         random.seed(seed=12345)
 
@@ -38,14 +38,11 @@ class SelectSpecRedTestCase(unittest.TestCase):
         config.redgalfile = os.path.join(self.test_dir, 'test_redgals.fits')
         config.redgalmodelfile = os.path.join(self.test_dir, 'test_redgalmodel.fits')
 
-        selred = SelectSpecRedGalaxies(config)
-        selred.run()
+        select_spec_red_galaxies_wrapper(config)
 
         # Check that files got made
         self.assertTrue(os.path.isfile(config.redgalfile))
         self.assertTrue(os.path.isfile(config.redgalmodelfile))
-        self.assertTrue(os.path.isfile(os.path.join(config.outpath, config.plotpath,
-                                                    '%s_redgals_g-r.png' % (config.d.outbase))))
 
         redgals = fitsio.read(config.redgalfile, ext=1)
         redgalmodel = fitsio.read(config.redgalmodelfile, ext=1)

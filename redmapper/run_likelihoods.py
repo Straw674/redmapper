@@ -1,4 +1,4 @@
-"""Class to run the second (likelihood) pass through a catalog for cluster finding.
+"""Function to run the second (likelihood) pass through a catalog for cluster finding.
 """
 import fitsio
 import numpy as np
@@ -8,250 +8,159 @@ import warnings
 
 from .cluster import ClusterCatalog
 from .catalog import Catalog
-from .background import Background
-from .mask import HPMask
+from .background import read_background
+from .mask import get_mask_values
 from .galaxy import GalaxyCatalog
 from .cluster import Cluster
-from .cluster import ClusterCatalog
-from .depthmap import DepthMap
-from .zlambda import Zlambda
-from .zlambda import ZlambdaCorrectionPar
-from .cluster_runner import ClusterRunner
+from .zlambda import compute_zlambda, read_zlambda_correction, apply_zlambda_correction
+from .cluster_runner import run_cluster_pipeline, output_cluster_catalog, generate_mem_match_ids, reset_bad_values
 from .utilities import chisq_pdf, interpol
+from .redsequence import redsequence_mstar
+from .configuration import Configuration
+from .logger import logger
 
-###################################################
-# Order of operations:
-#  __init__()
-#    _additional_initialization() [override this]
-#  run()
-#    _setup()
-#    _more_setup() [override this]
-#    _process_cluster() [override this]
-#    _postprocess() [override this]
-#  output()
-###################################################
+def _likelihoods_more_setup(state, cleaninput=False, keepz=False, **kwargs):
+    config = state['config']
+    logger.info("%s: Likelihoods using catfile: %s" % (state['hpix_logstr'], config.catfile))
 
-class RunLikelihoods(ClusterRunner):
-    """
-    The RunLikelihoods class is derived from a ClusterRunner, and will compute
-    richness and cluster likelihood (including centering) and other associated
-    values for the second "likelihood" pass of the cluster finder.
+    cat = ClusterCatalog.from_catfile(config.catfile, zredstr=state['zredstr'], config=config,
+                                           bkg=state['bkg'], cosmo=state['cosmo'],
+                                           r0=state['r0'], beta=state['beta'])
+    
+    zrange = copy.copy(config.zrange)
+    if keepz:
+        zrange[0] -= config.calib_zrange_cushion
+        zrange[0] = zrange[0] if zrange[0] > 0.05 else 0.05
+        zrange[1] += config.calib_zrange_cushion
 
-    The specific configuration variables used in the likelihood run are:
+    use, = np.where((cat.z > zrange[0]) & (cat.z < zrange[1]) & (cat.Lambda > 0.0))
 
-    likelihoods_r0: `float`
-       r0 value for radius/richness relation
-    likelihoods_beta: `float`
-       beta value for radius/richness relation
-    likelihoods_use_zred: `bool`
-       Centering likelihood should use zred filter rather than chisq filter.
-    likelihoods_minlambda: `float`
-       Minimum richness (lambda/scaleval) to record in output catalog
-    """
+    if use.size == 0:
+        logger.info("No usable inputs for likelihood on pixel %s" % (state['hpix_logstr']))
+        state['cat'] = None
+        return state, False
 
-    def _additional_initialization(self):
-        """
-        Additional initialization for RunLikelihoods.
-        """
-        self.runmode = 'likelihoods'
+    mstar = redsequence_mstar(state['zredstr'], cat.z[use])
+    mlim = mstar - 2.5 * np.log10(state['limlum'])
 
-        if self.config.likelihoods_use_zred:
-            self.read_zreds = True
-            self.zreds_required = True
-        else:
-            self.read_zreds = False
-            self.zreds_required = False
+    good, = np.where(cat.refmag[use] < mlim)
+    if good.size == 0:
+        logger.info("No good inputs for likelihood on pixel %s" % (state['hpix_logstr']))
+        state['cat'] = None
+        return state, False
 
-        self.cutgals_bkgrange = True
-        self.cutgals_chisqmax = True
+    cat = cat[use[good]]
 
-        self.filetype = 'like'
+    if cleaninput:
+        catmask = get_mask_values(state['mask']['mask_data'], cat.ra, cat.dec, rng=state['mask']['rng'], config=state['mask']['config'])
+        cat = cat[catmask]
 
-    def run(self, *args, **kwargs):
-        """
-        Run a catalog through RunLikelihoods.
+        if cat.size == 0:
+            logger.info("No input cluster positions are in the mask on pixel %s" % (state['hpix_logstr']))
+            state['cat'] = None
+            return state, False
+    
+    state['cat'] = cat
+    return state, True
 
-        Loop over all clusters and perform RunLikelihoods computations on each cluster.
+def _likelihoods_process_cluster(cluster, state):
+    bad = False
+    config = state['config']
+    
+    maxmag = cluster.mstar - 2.5*np.log10(state['limlum'])
 
-        Parameters
-        ----------
-        keepz: `bool`, optional
-           Keep input redshifts?  (Otherwise use z_lambda).
-           Default is False.
-        cleaninput: `bool`, optional
-           Clean seed clusters that are out of the footprint?  Default is False.
-        """
+    lam = cluster.calc_richness(state['mask'])
 
-        return super(RunLikelihoods, self).run(*args, **kwargs)
+    minrind = np.argmin(cluster.neighbors.r)
+    incut, = np.where((cluster.neighbors.pmem > 0.0) &
+                      (cluster.neighbors.r > cluster.neighbors.r[minrind]))
 
-    def _more_setup(self, *args, **kwargs):
-        """
-        More setup for RunLikelihoods
-
-        Parameters
-        ----------
-        keepz: `bool`, optional
-           Keep input redshifts?  (Otherwise use z_lambda).
-           Default is False.
-        cleaninput: `bool`, optional
-           Clean seed clusters that are out of the footprint?  Default is False.
-        """
-
-        self.cleaninput = kwargs.pop('cleaninput', False)
-
-        self.config.logger.info("%s: Likelihoods using catfile: %s" % (self.hpix_logstr, self.config.catfile))
-
-        self.cat = ClusterCatalog.from_catfile(self.config.catfile,
-                                               zredstr=self.zredstr,
-                                               config=self.config,
-                                               bkg=self.bkg,
-                                               cosmo=self.cosmo,
-                                               r0=self.r0,
-                                               beta=self.beta)
-
-        keepz = kwargs.pop('keepz', False)
-
-        zrange = copy.copy(self.config.zrange)
-        if keepz:
-            zrange[0] -= self.config.calib_zrange_cushion
-            zrange[0] = zrange[0] if zrange[0] > 0.05 else 0.05
-            zrange[1] += self.config.calib_zrange_cushion
-
-        use, = np.where((self.cat.z > zrange[0]) &
-                        (self.cat.z < zrange[1]) &
-                        (self.cat.Lambda > 0.0))
-
-        if use.size == 0:
-            self.cat = None
-            self.config.logger.info("No usable inputs for likelihood on pixel %s" % (self.hpix_logstr))
-            return False
-
-        mstar = self.zredstr.mstar(self.cat.z[use])
-        mlim = mstar - 2.5 * np.log10(self.limlum)
-
-        good, = np.where(self.cat.refmag[use] < mlim)
-
-        if good.size == 0:
-            self.cat = None
-            self.config.logger.info("No good inputs for likelihood on pixel %s" % (self.hpix_logstr))
-            return False
-
-        self.cat = self.cat[use[good]]
-
-        if self.cleaninput:
-            catmask = self.mask.compute_radmask(self.cat.ra, self.cat.dec)
-            self.cat = self.cat[catmask]
-
-            if self.cat.size == 0:
-                self.cat = None
-                self.config.logger.info("No input cluster positions are in the mask on pixel %s" % (self.hpix_logstr))
-                return False
-
-        self.do_lam_plusminux = False
-        self.match_centers_to_galaxies = False
-        self.record_members = False
-        self.do_correct_zlambda = False
-        self.do_pz = False
-
-        return True
-
-    def _reset_bad_values(self, cluster):
-        """
-        Internal method to reset all cluster values to "bad" values.
-        """
+    if cluster.Lambda < config.likelihoods_minlambda or incut.size < 3:
         cluster.lnlamlike = -1e11
         cluster.lnbcglike = -1e11
         cluster.lnlike = -1e11
+        return True
 
-        super(RunLikelihoods, self)._reset_bad_values(cluster)
+    cluster.lnlamlike = (-cluster.Lambda / cluster.scaleval -
+                          np.sum(np.log(1.0 - cluster.neighbors.pmem[incut])))
 
-    def _process_cluster(self, cluster):
-        """
-        Process a single cluster with RunLikelihoods.
+    if config.lnw_cen_sigma <= 0.0:
+        cluster.lnbcglike = 0.0
+    else:
+        mbar = (cluster.mstar + config.wcen_Delta0 +
+                config.wcen_Delta1 * np.log(cluster.Lambda / config.wcen_pivot))
+        phi_cen = ((1. / (np.sqrt(2. * np.pi) * config.wcen_sigma_m)) *
+                   np.exp(-0.5 * (cluster.neighbors.refmag[minrind] - mbar)**2. / config.wcen_sigma_m**2.))
 
-        Parameters
-        ----------
-        cluster: `redmapper.Cluster`
-           Cluster to compute richness.
-        """
-
-        bad = False
-
-        maxmag = cluster.mstar - 2.5*np.log10(self.limlum)
-
-        lam = cluster.calc_richness(self.mask)
-
-        minrind = np.argmin(cluster.neighbors.r)
-        incut, = np.where((cluster.neighbors.pmem > 0.0) &
-                          (cluster.neighbors.r > cluster.neighbors.r[minrind]))
-
-        if cluster.Lambda < self.config.likelihoods_minlambda or incut.size < 3:
-            # this is a bad cluster
-            self._reset_bad_values(cluster)
-            bad = True
-            return bad
-
-        # compute the cluster member likelihood
-        cluster.lnlamlike = (-cluster.Lambda / cluster.scaleval -
-                              np.sum(np.log(1.0 - cluster.neighbors.pmem[incut])))
-
-        # And the central likelihood
-        if self.config.lnw_cen_sigma <= 0.0:
-            # We do not have a calibration yet
-            cluster.lnbcglike = 0.0
-        else:
-            # First phi_cen
-            mbar = (cluster.mstar + self.config.wcen_Delta0 +
-                    self.config.wcen_Delta1 * np.log(cluster.Lambda / self.config.wcen_pivot))
-            phi_cen = ((1. / (np.sqrt(2. * np.pi) * self.config.wcen_sigma_m)) *
-                       np.exp(-0.5 * (cluster.neighbors.refmag[minrind] - mbar)**2. / self.config.wcen_sigma_m**2.))
-
-            # And the zred or chisq filter
-            if self.config.likelihoods_use_zred:
-                # We use "z_lambda" here because this is specifically a correction on z_lambda
-                # (but should be equal to cluster.redshift)
-                if self.zlambda_corr is not None:
-                    zrmod = interpol(self.zlambda_corr.zred_uncorr, self.zlambda_corr.z, cluster.z_lambda)
-                else:
-                    zrmod = cluster.z_lambda
-
-                g = ((1./(np.sqrt(2. * np.pi) * cluster.neighbors.zred_e[minrind])) *
-                     np.exp(-0.5 * (cluster.neighbors.zred[minrind] - zrmod)**2. / cluster.neighbors.zred_e[minrind]**2.))
+        if config.likelihoods_use_zred:
+            if state['zlambda_corr'] is not None:
+                zrmod = interpol(state['zlambda_corr']['zred_uncorr'], state['zlambda_corr']['z'], cluster.z_lambda)
             else:
-                # chisq filter
-                g = chisq_pdf(cluster.neighbors.chisq[minrind], self.zredstr.dof)
+                zrmod = cluster.z_lambda
 
-            # and the w filter
-            lum = 10.**((cluster.mstar - cluster.neighbors.refmag) / 2.5)
-            u, = np.where((cluster.neighbors.r > 1e-5) & (cluster.neighbors.pmem > 0.0))
-            w = np.log(np.sum(cluster.neighbors.pmem[u] * lum[u] /
-                              np.sqrt(cluster.neighbors.r[u]**2. + self.config.wcen_rsoft**2.)) / ((1. / cluster.r_lambda) * np.sum(cluster.neighbors.pmem[u] * lum[u])))
-            sig = self.config.lnw_cen_sigma / np.sqrt(((np.clip(cluster.Lambda, None, self.config.wcen_maxlambda)) / cluster.scaleval) / self.config.wcen_pivot)
-            fw = (1. / (np.sqrt(2. * np.pi) * sig)) * np.exp(-0.5 * (np.log(w) - self.config.lnw_cen_mean)**2. / (sig**2.))
+            g = ((1./(np.sqrt(2. * np.pi) * cluster.neighbors.zred_e[minrind])) *
+                 np.exp(-0.5 * (cluster.neighbors.zred[minrind] - zrmod)**2. / cluster.neighbors.zred_e[minrind]**2.))
+        else:
+            g = chisq_pdf(cluster.neighbors.chisq[minrind], state['zredstr']['ncol'])
 
-            with warnings.catch_warnings():
-                warnings.simplefilter("error")
+        lum = 10.**((cluster.mstar - cluster.neighbors.refmag) / 2.5)
+        u, = np.where((cluster.neighbors.r > 1e-5) & (cluster.neighbors.pmem > 0.0))
+        w = np.log(np.sum(cluster.neighbors.pmem[u] * lum[u] /
+                          np.sqrt(cluster.neighbors.r[u]**2. + config.wcen_rsoft**2.)) / ((1. / cluster.r_lambda) * np.sum(cluster.neighbors.pmem[u] * lum[u])))
+        sig = config.lnw_cen_sigma / np.sqrt(((np.clip(cluster.Lambda, None, config.wcen_maxlambda)) / cluster.scaleval) / config.wcen_pivot)
+        fw = (1. / (np.sqrt(2. * np.pi) * sig)) * np.exp(-0.5 * (np.log(w) - config.lnw_cen_mean)**2. / (sig**2.))
 
-                cluster.lnbcglike = np.log(phi_cen * np.clip(g, 1e-10, None) * fw)
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            cluster.lnbcglike = np.log(phi_cen * np.clip(g, 1e-10, None) * fw)
 
-            cluster.lnlike = cluster.lnbcglike + cluster.lnlamlike
+        cluster.lnlike = cluster.lnbcglike + cluster.lnlamlike
 
-        return bad
+    return False
+
+def _likelihoods_postprocess(cat, members, state):
+    use, = np.where(cat.lnlamlike > -1e11)
+    cat = ClusterCatalog(cat._ndarray[use])
+    if members is not None:
+        a, b = esutil.numpy_util.match(cat.mem_match_id, members.mem_match_id)
+        members = Catalog(members._ndarray[b])
+    return cat, members
+
+def run_likelihoods(conf, keepz=False, cleaninput=False):
+    """
+    Run likelihoods on a catalog.
+    """
+    if not isinstance(conf, Configuration):
+        config = Configuration(conf)
+    else:
+        config = conf
+
+    read_zreds = config.likelihoods_use_zred
+    zreds_required = config.likelihoods_use_zred
+
+    cat, members = run_cluster_pipeline(
+        config,
+        runmode='likelihoods',
+        filetype='like',
+        more_setup_fn=_likelihoods_more_setup,
+        process_cluster_fn=_likelihoods_process_cluster,
+        postprocess_fn=_likelihoods_postprocess,
+        read_gals=True,
+        read_zreds=read_zreds,
+        zreds_required=zreds_required,
+        cutgals_bkgrange=True,
+        cutgals_chisqmax=True,
+        keepz=keepz,
+        cleaninput=cleaninput,
+        do_lam_plusminus=False,
+        match_centers_to_galaxies=False,
+        record_members=False,
+        do_correct_zlambda=False,
+        do_pz=False,
+        min_lambda=config.likelihoods_minlambda
+    )
 
 
-    def _postprocess(self):
-        """
-        RunLikelihoods post-processing.
+    return cat, members
 
-        This will select clusters where they have a valid likelihood computed.
-        """
 
-        # For this catalog we're cutting on failed likelihood
-
-        use, = np.where(self.cat.lnlamlike > -1e11)
-
-        # Make a new catalog that doesn't have the extra memory usage
-        # from catalogs and neighbors
-        self.cat = ClusterCatalog(self.cat._ndarray[use])
-
-        # should I delete unused columns here before saving?

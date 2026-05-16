@@ -8,16 +8,16 @@ import tempfile
 from numpy import random
 
 from redmapper.configuration import Configuration
-from redmapper.calibration import ZLambdaCalibrator
+from redmapper.calibration import calibrate_zlambda
 
 class ZLambdaCalTestCase(unittest.TestCase):
     """
-    Tests of redmapper.calibration.ZLambdaCalibrator, calibration of
+    Tests of redmapper.calibration.calibrate_zlambda, calibration of
     z_lambda correction factors.
     """
     def test_zlambdacal(self):
         """
-        Run tests on redmapper.calibration.ZLambdaCalibrator.
+        Run tests on redmapper.calibration.calibrate_zlambda.
         """
         file_path = 'data_for_tests'
         conf_filename = 'testconfig.yaml'
@@ -31,8 +31,7 @@ class ZLambdaCalTestCase(unittest.TestCase):
         config.catfile = os.path.join(file_path, 'test_zlamcal_cat.fit')
         config.zlambdafile = os.path.join(self.test_dir, 'test_zlambdafile.fits')
 
-        zlambdacal = ZLambdaCalibrator(config, corrslope=False)
-        zlambdacal.run()
+        calibrate_zlambda(config, corrslope=False)
 
         # Make sure the file is there
         self.assertTrue(os.path.isfile(config.zlambdafile))
@@ -76,8 +75,5 @@ class ZLambdaCalTestCase(unittest.TestCase):
             if os.path.exists(self.test_dir):
                 shutil.rmtree(self.test_dir, True)
 
-
 if __name__=='__main__':
     unittest.main()
-
-

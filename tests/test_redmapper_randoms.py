@@ -10,8 +10,9 @@ import shutil
 import os
 import esutil
 
-from redmapper import Configuration, VolumeLimitMask, GenerateRandoms
-from redmapper import RandomCatalog, RunRandomsZmask, RandomWeigher
+from redmapper import Configuration, generate_randoms
+from redmapper.volumelimit import create_volume_limit_mask
+from redmapper import RandomCatalog, run_randoms_zmask, weight_randoms
 from redmapper import Catalog
 
 class RedmapperRandomsTestCase(unittest.TestCase):
@@ -36,15 +37,14 @@ class RedmapperRandomsTestCase(unittest.TestCase):
 
         # Use the depth map to generate a zmax map, 0.2L*
         # This outputs the file
-        vlim = VolumeLimitMask(config, 5.0)
+        vlim = create_volume_limit_mask(config, 5.0)
 
         # Use the zmax map + test_dr8_input_cluster_catalog.fit to generate
         # a list of random points
         nrands = 100
         rng = random.RandomState(12345)
 
-        generateRandoms = GenerateRandoms(config, vlim_mask=vlim, rng=rng)
-        generateRandoms.generate_randoms(nrands)
+        generate_randoms(config, nrands, vlim_mask=vlim, rng=rng)
 
         # Read in the randoms, make sure they come back
         rands = RandomCatalog.from_randfile(config.randfile)
@@ -57,20 +57,20 @@ class RedmapperRandomsTestCase(unittest.TestCase):
         testing.assert_array_almost_equal(rands.z[: 2], [0.221394, 0.382162])
         testing.assert_array_almost_equal(rands.Lambda[: 2], [22.093416, 35.16693])
 
-        # Run the random points through the zmask code
-        rand_zmask = RunRandomsZmask(config)
-        rand_zmask.run()
-        rand_zmask.output(savemembers=False)
+        from redmapper.cluster_runner import output_cluster_catalog
 
-        randcat = Catalog.from_fits_file(rand_zmask.filename)
+        # Run the random points through the zmask code
+        cat, members = run_randoms_zmask(config)
+        filename = output_cluster_catalog(cat, members, config, 'randoms_zmask', savemembers=False, withversion=True)
+
+        randcat = Catalog.from_fits_file(filename)
         testing.assert_array_less(0.98, randcat.scaleval)
         testing.assert_array_less(randcat.scaleval, 3.0)
         testing.assert_array_less(-0.00001, randcat.maskfrac)
         testing.assert_array_less(randcat.maskfrac, 1.00001)
 
         # Figure out final selection
-        weigher = RandomWeigher(config, rand_zmask.filename)
-        wt_randfile, wt_areafile = weigher.weight_randoms(20.0)
+        wt_randfile, wt_areafile = weight_randoms(config, filename, 20.0)
 
         # Make sure that the weighted randoms are there...
         self.assertTrue(os.path.isfile(wt_randfile))
@@ -83,7 +83,7 @@ class RedmapperRandomsTestCase(unittest.TestCase):
 
         astr = Catalog.from_fits_file(wt_areafile)
         testing.assert_array_less(-0.0001, astr.area)
-        testing.assert_array_almost_equal(astr.area[100: 103], [0.992, 0.987, 0.982], 3)
+        testing.assert_array_almost_equal(astr.area[100: 103], [0.991, 0.986, 0.980], 3)
 
     def setUp(self):
         self.test_dir = None

@@ -15,5 +15,4 @@ if __name__ == '__main__':
 
     args = parser.parse_args()
 
-    calib = redmapper.redmagic.RedmagicCalibrator(args.configfile)
-    calib.run()
+    redmapper.redmagic.calibrate_redmagic(args.configfile)

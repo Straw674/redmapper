@@ -4,6 +4,7 @@ import shutil
 import os
 
 from redmapper import Configuration
+from redmapper import logger
 
 class LoggingTestCase(unittest.TestCase):
     """Tests for writing log files.
@@ -16,7 +17,7 @@ class LoggingTestCase(unittest.TestCase):
 
         # Note I do not know how to confirm this works other than running
         # by hand.
-        config.logger.info("Testing!")
+        logger.info("Testing!")
 
     def test_logfile_filename(self):
         """Test file logging, with a specific filename."""
@@ -29,7 +30,7 @@ class LoggingTestCase(unittest.TestCase):
         config.printlogging = False
 
         config.start_file_logging("testlog.log")
-        config.logger.info("Testing!")
+        logger.info("Testing!")
         config.stop_file_logging()
 
         logfile = os.path.join(config.outpath, 'logs', 'testlog.log')
@@ -45,10 +46,10 @@ class LoggingTestCase(unittest.TestCase):
         config.outpath = self.test_dir
         config.printlogging = False
 
-        config.d.hpix = [1, 2]
+        config.hpix = [1, 2]
 
         config.start_file_logging()
-        config.logger.info("Testing!")
+        logger.info("Testing!")
         config.stop_file_logging()
 
         logfile = os.path.join(config.outpath, 'logs',
@@ -65,10 +66,10 @@ class LoggingTestCase(unittest.TestCase):
         config.outpath = self.test_dir
         config.printlogging = False
 
-        config.d.hpix = [23]
+        config.hpix = [23]
 
         config.start_file_logging()
-        config.logger.info("Testing!")
+        logger.info("Testing!")
         config.stop_file_logging()
 
         logfile = os.path.join(config.outpath, 'logs',

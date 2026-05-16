@@ -21,5 +21,4 @@ if __name__ == '__main__':
 
     args = parser.parse_args()
 
-    runZmaskPixelTask = redmapper.pipeline.RunZmaskPixelTask(args.configfile, args.pixel, args.nside, path=args.path)
-    runZmaskPixelTask.run()
+    redmapper.pipeline.run_zmask_pixel_task(args.configfile, args.pixel, args.nside, path=args.path)

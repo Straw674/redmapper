@@ -5,24 +5,22 @@ import fitsio
 import tempfile
 import os
 
-from redmapper import ColorBackground
-from redmapper import ColorBackgroundGenerator
+from redmapper import read_color_background, sigma_g_diagonal, lookup_diagonal, lookup_offdiag, generate_color_background
 from redmapper import Configuration
 
 class ColorBackgroundTestCase(unittest.TestCase):
     """
-    Tests for the redmapper.ColorBackground and
-    redmapper.ColorBackgroundGenerator classes.
+    Tests for the redmapper color_background functions.
     """
     def runTest(self):
         """
-        Run the ColorBackground and ColorBackgroundGenerator tests.
+        Run the color_background tests.
         """
 
         file_name = 'test_dr8_col_bkg.fit'
         file_path = 'data_for_tests'
 
-        cbkg = ColorBackground('%s/%s' % (file_path, file_name))
+        cbkg = read_color_background('%s/%s' % (file_path, file_name))
 
         col1 = np.array([0.572300, 1.39560])
         col2 = np.array([0.7894, 0.9564])
@@ -38,19 +36,19 @@ class ColorBackgroundTestCase(unittest.TestCase):
         idl_bkg12 = np.array([0.01085, 0.081])
 
         # Test color1
-        py_outputs = cbkg.lookup_diagonal(1, col1, refmags)
+        py_outputs = lookup_diagonal(cbkg, 1, col1, refmags)
         testing.assert_almost_equal(py_outputs, idl_bkg1, decimal=4)
 
         # Test color2
-        py_outputs = cbkg.lookup_diagonal(2, col2, refmags)
+        py_outputs = lookup_diagonal(cbkg, 2, col2, refmags)
         testing.assert_almost_equal(py_outputs, idl_bkg2, decimal=4)
 
         # Test off-diagonal
-        py_outputs = cbkg.lookup_offdiag(1, 2, col1, col2, refmags)
+        py_outputs = lookup_offdiag(cbkg, 1, 2, col1, col2, refmags)
         testing.assert_almost_equal(py_outputs, idl_bkg12, decimal=4)
 
         # And a test sigma_g with the usehdrarea=True
-        cbkg2 = ColorBackground('%s/%s' % (file_path, file_name), usehdrarea=True)
+        cbkg2 = read_color_background('%s/%s' % (file_path, file_name), usehdrarea=True)
 
         col1 = np.array([0.572300, 1.39560, 1.0])
         col2 = np.array([0.7894, 0.9564, 1.0])
@@ -60,11 +58,11 @@ class ColorBackgroundTestCase(unittest.TestCase):
         idl_sigma_g2 = np.array([7.569, 82.8938, np.inf])
 
         # Test color1
-        py_outputs = cbkg2.sigma_g_diagonal(1, col1, refmags)
+        py_outputs = sigma_g_diagonal(cbkg2, 1, col1, refmags)
         testing.assert_almost_equal(py_outputs, idl_sigma_g1, decimal=1)
 
         # Test color2
-        py_outputs = cbkg2.sigma_g_diagonal(2, col2, refmags)
+        py_outputs = sigma_g_diagonal(cbkg2, 2, col2, refmags)
         testing.assert_almost_equal(py_outputs, idl_sigma_g2, decimal=1)
 
 
@@ -76,13 +74,11 @@ class ColorBackgroundTestCase(unittest.TestCase):
         tfile = tempfile.mkstemp()
         os.close(tfile[0])
         config.bkgfile_color = tfile[1]
-        config.d.nside = 128
-        config.d.hpix = [8421]
+        config.nside = 128
+        config.hpix = [8421]
         config.border = 0.0
 
-        cbg = ColorBackgroundGenerator(config, minrangecheck=5)
-        # Need to set clobber=True because the tempfile was created
-        cbg.run(clobber=True)
+        generate_color_background(config, minrangecheck=5, clobber=True)
 
         fits = fitsio.FITS(config.bkgfile_color)
 

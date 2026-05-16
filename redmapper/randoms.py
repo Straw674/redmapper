@@ -8,151 +8,127 @@ import copy
 import numpy as np
 import healsparse
 import warnings
+import os
 
 from .catalog import Catalog, Entry
 from .galaxy import GalaxyCatalog, GalaxyCatalogMaker
 from .cluster import ClusterCatalog
-from .utilities import make_nodes, CubicSpline
-from .fitters import MedZFitter
-from .volumelimit import VolumeLimitMask
+from .utilities import make_nodes, cubic_spline_compute_y2, cubic_spline_interpolate
+from .fitters import fit_med_z
+from .volumelimit import create_volume_limit_mask, calc_zmax, get_volume_limit_areas
+from .logger import logger
 
-class GenerateRandoms(object):
+def generate_randoms(config, nrandoms, vlim_mask=None, vlim_lstar=None, redmapper_cat=None, rng=None):
     """
-    Class to generate redmapper raw randoms using a redmapper volume limit mask.
+    Generate seed randoms for use in redmapper, applying redshift mask.
+
+    Parameters
+    ----------
+    config : `redmapper.Configuration`
+    nrandoms : `int`
+       Number of random points to generate.
+    vlim_mask : `dict`, optional
+       Volume limit mask, or else it will be read/generated from config
+    vlim_lstar : `float`, optional
+       Volume limit lstar, or else it is from config.vlim_lstar
+    redmapper_cat : `redmapper.ClusterCatalog`, optional
+       Redmapper catalog, or else it will be read from config.catfile
+    rng : `np.random.RandomState`, optional
+       Pre-set random number generator.  Default is None.
     """
+    if rng is None:
+        rng = np.random.RandomState(config.randomseed)
 
-    def __init__(self, config, vlim_mask=None, vlim_lstar=None, redmapper_cat=None, rng=None):
-        """
-        Instantiate a GenerateRandoms object, to generate seed randoms for redmapper.
+    if config.randfile is None:
+        raise RuntimeError("Must set randfile in config to run GenerateRandoms.")
 
-        Parameters
-        ----------
-        config : `redmapper.Configuration`
-        vlim_mask : `redmapper.VolumeLimitMask`, optional
-           Volume limit mask, or else it will be read/generated from config
-        vlim_lstar : `float`, optional
-           Volume limit lstar, or else it is from config.vlim_lstar
-        redmapper_cat : `redmapper.ClusterCatalog`, optional
-           Redmapper catalog, or else it will be read from config.catfile
-        rng : `np.random.RandomState`, optional
-            Random number generator.
-        """
-        self.config = config
+    if vlim_lstar is None:
+        vlim_lstar = config.vlim_lstar
 
-        if rng is None:
-            rng = np.random.RandomState(self.config.randomseed)
-        self.rng = rng
+    if vlim_mask is None:
+        vlim_mask = create_volume_limit_mask(config, vlim_lstar)
 
-        if self.config.randfile is None:
-            raise RuntimeError("Must set randfile in config to run GenerateRandoms.")
+    if redmapper_cat is None:
+        redmapper_cat = ClusterCatalog.from_fits_file(config.catfile)
 
-        if vlim_lstar is None:
-            self.vlim_lstar = self.config.vlim_lstar
-        else:
-            self.vlim_lstar = vlim_lstar
+    min_gen = 10000
+    max_gen = 1000000
 
-        if vlim_mask is None:
-            self.vlim_mask = VolumeLimitMask(self.config, self.vlim_lstar)
-        else:
-            self.vlim_mask = vlim_mask
+    n_left = copy.copy(nrandoms)
+    ctr = 0
 
-        if redmapper_cat is None:
-            self.redmapper_cat = ClusterCatalog.from_fits_file(self.config.catfile)
-        else:
-            self.redmapper_cat = redmapper_cat
+    dtype = [('id', 'i4'),
+             ('ra', 'f8'),
+             ('dec', 'f8'),
+             ('z', 'f4'),
+             ('lambda', 'f4'),
+             ('id_input', 'i4')]
 
-    def generate_randoms(self, nrandoms, rng=None):
-        """
-        Generate seed randoms for use in redmapper, applying redshift mask.
+    info_dict = {}
+    # Get outbase from config.randfile
+    m = re.search(r'(.*)\_master\_table.fit$', config.randfile)
+    if m is None:
+        raise RuntimeError("Config has randfile of incorrect format.  Must end in _master_table.fit")
+    outbase = m.groups()[0]
+    maker = RandomCatalogMaker(outbase, info_dict, nside=config.galfile_nside)
 
-        Parameters
-        ----------
-        nrandoms : `int`
-           Number of random points to generate.
-        rng : `np.random.RandomState`, optional
-           Pre-set random number generator.  Default is None.
-        """
-        if rng is None:
-            rng = self.rng
+    logger.info("Generating %d randoms to %s" % (n_left, outbase))
 
-        min_gen = 10000
-        max_gen = 1000000
+    while (n_left > 0):
+        n_gen = np.clip(n_left * 3, min_gen, max_gen)
+        ra_rand, dec_rand = healsparse.make_uniform_randoms(vlim_mask['sparse_vlimmap'],
+                                                            n_gen, rng=rng)
 
-        n_left = copy.copy(nrandoms)
-        ctr = 0
+        zmax, fracgood = calc_zmax(vlim_mask, ra_rand, dec_rand, get_fracgood=True)
 
-        dtype = [('id', 'i4'),
-                 ('ra', 'f8'),
-                 ('dec', 'f8'),
-                 ('z', 'f4'),
-                 ('lambda', 'f4'),
-                 ('id_input', 'i4')]
+        r = rng.uniform(size=n_gen)
+        gd, = np.where(r < fracgood)
 
-        info_dict = {}
-        # Get outbase from self.config.randfile
-        m = re.search(r'(.*)\_master\_table.fit$', self.config.randfile)
-        if m is None:
-            raise RuntimeError("Config has randfile of incorrect format.  Must end in _master_table.fit")
-        outbase = m.groups()[0]
-        maker = RandomCatalogMaker(outbase, info_dict, nside=self.config.galfile_nside)
+        if gd.size == 0:
+            continue
 
-        self.config.logger.info("Generating %d randoms to %s" % (n_left, outbase))
+        tempcat = Catalog(np.zeros(gd.size, dtype=dtype))
+        tempcat.ra = ra_rand[gd]
+        tempcat.dec = dec_rand[gd]
+        tempcat.z = -1.0
 
-        while (n_left > 0):
-            n_gen = np.clip(n_left * 3, min_gen, max_gen)
-            ra_rand, dec_rand = healsparse.make_uniform_randoms(self.vlim_mask.sparse_vlimmap,
-                                                                n_gen, rng=rng)
+        r = rng.choice(np.arange(redmapper_cat.size), size=gd.size, replace=True)
+        zz = redmapper_cat.z_lambda[r]
+        ll = redmapper_cat.Lambda[r]
+        ii = redmapper_cat.mem_match_id[r]
 
-            zmax, fracgood = self.vlim_mask.calc_zmax(ra_rand, dec_rand, get_fracgood=True)
+        # zctr counts the number of successfully placed randoms
+        # while i counts index through tempcat, many of which will be rejected.
+        zctr = 0
+        for i in range(tempcat.size):
+            if (zz[zctr] < zmax[i]):
+                # This is in a location that is within the volume limit.
+                tempcat.z[i] = zz[zctr]
+                tempcat.Lambda[i] = ll[zctr]
+                tempcat.id_input[i] = ii[zctr]
+                zctr += 1
 
-            r = rng.uniform(size=n_gen)
-            gd, = np.where(r < fracgood)
+        # Which of the tempcat were actually placed?
+        gd, = np.where(tempcat.z > 0.0)
+        n_good = gd.size
 
-            if gd.size == 0:
-                continue
+        if n_good == 0:
+            continue
 
-            tempcat = Catalog(np.zeros(gd.size, dtype=dtype))
-            tempcat.ra = ra_rand[gd]
-            tempcat.dec = dec_rand[gd]
-            tempcat.z = -1.0
+        if n_good > n_left:
+            n_good = n_left
+            gd = gd[0: n_good]
 
-            r = rng.choice(np.arange(self.redmapper_cat.size), size=gd.size, replace=True)
-            zz = self.redmapper_cat.z_lambda[r]
-            ll = self.redmapper_cat.Lambda[r]
-            ii = self.redmapper_cat.mem_match_id[r]
+        tempcat = tempcat[gd]
+        tempcat.id = np.arange(ctr + 1, ctr + n_good + 1)
 
-            # zctr counts the number of successfully placed randoms
-            # while i counts index through tempcat, many of which will be rejected.
-            zctr = 0
-            for i in range(tempcat.size):
-                if (zz[zctr] < zmax[i]):
-                    # This is in a location that is within the volume limit.
-                    tempcat.z[i] = zz[zctr]
-                    tempcat.Lambda[i] = ll[zctr]
-                    tempcat.id_input[i] = ii[zctr]
-                    zctr += 1
+        maker.append_randoms(tempcat._ndarray[: n_good])
 
-            # Which of the tempcat were actually placed?
-            gd, = np.where(tempcat.z > 0.0)
-            n_good = gd.size
+        ctr += n_good
+        n_left -= n_good
+        logger.info("There are %d randoms remaining..." % (n_left))
 
-            if n_good == 0:
-                continue
-
-            if n_good > n_left:
-                n_good = n_left
-                gd = gd[0: n_good]
-
-            tempcat = tempcat[gd]
-            tempcat.id = np.arange(ctr + 1, ctr + n_good + 1)
-
-            maker.append_randoms(tempcat._ndarray[: n_good])
-
-            ctr += n_good
-            n_left -= n_good
-            self.config.logger.info("There are %d randoms remaining..." % (n_left))
-
-        maker.finalize_catalog()
+    maker.finalize_catalog()
 
 
 class RandomCatalog(GalaxyCatalog):
@@ -229,188 +205,168 @@ class RandomCatalogMaker(GalaxyCatalogMaker):
         return True
 
 
-class RandomWeigher(object):
+def weight_randoms(config, randcatfile, minlambda, zrange=None, lambdabin=None, vlim_mask=None, vlim_lstar=None, redmapper_cat=None):
     """
-    Class to compute random weights and effective area.
+    Compute random weights.
+
+    Parameters
+    ----------
+    config : `redmapper.Configuration`
+    randcatfile : `str`
+       Consolidated random catalog with scaleval, maskfrac
+    minlambda : `float`
+       Minimum lambda to use in computations
+    zrange : `np.ndarray`, optional
+       2-element list of redshift range.  Default is full range.
+    lambdabin : `np.ndarray`, optional
+       2-element list of lambda range.  Default is full range.
+    vlim_mask : `dict`, optional
+       Volume limit mask, or else it will be read/generated from config
+    vlim_lstar : `float`, optional
+       Volume limit lstar, or else it is from config.vlim_lstar
+    redmapper_cat : `redmapper.ClusterCatalog`, optional
+       Redmapper catalog, or else it will be read from config.catfile
     """
-    def __init__(self, config, randcatfile, vlim_mask=None, vlim_lstar=None, redmapper_cat=None):
-        """
-        Instantiate a RandomWeigher object, to generate weighted randoms.
+    randcat = Catalog.from_fits_file(randcatfile)
 
-        Parameters
-        ----------
-        config : `redmapper.Configuration`
-        randcatfile : `str`
-           Consolidated random catalog with scaleval, maskfrac
-        vlim_mask : `redmapper.VolumeLimitMask`, optional
-           Volume limit mask, or else it will be read/generated from config
-        vlim_lstar : `float`, optional
-           Volume limit lstar, or else it is from config.vlim_lstar
-        redmapper_cat : `redmapper.ClusterCatalog`, optional
-           Redmapper catalog, or else it will be read from config.catfile
-        """
-        self.config = config
+    if vlim_lstar is None:
+        vlim_lstar = config.vlim_lstar
 
-        self.randcat = Catalog.from_fits_file(randcatfile)
+    if vlim_mask is None:
+        vlim_mask = create_volume_limit_mask(config, vlim_lstar)
 
-        if vlim_lstar is None:
-            self.vlim_lstar = self.config.vlim_lstar
+    if redmapper_cat is None:
+        redmapper_cat = ClusterCatalog.from_fits_file(config.catfile)
+
+    if zrange is None:
+        zrange = np.array([config.zrange[0], config.zrange[1]])
+
+    zname = 'z%03d-%03d' % (int(config.zrange[0]*100),
+                            int(config.zrange[1]*100))
+    vlimname = 'vl%02d' % (int(vlim_lstar*10))
+    if lambdabin is None:
+        lamname = 'lgt%03d' % (int(minlambda))
+        lambdabin = np.array([0.0, 1000.0])
+    else:
+        lamname = 'lgt%03d_l%03d-%03d' % (int(minlambda), int(lambdabin[0]), int(lambdabin[1]))
+
+    zuse, = np.where((randcat.z > zrange[0]) &
+                     (randcat.z < zrange[1]))
+
+    if zuse.size == 0:
+        raise RuntimeError("No random points in specified redshift range %.2f < z < %.2f" %
+                           (zrange[0], zrange[1]))
+
+    st = np.argsort(randcat.id_input[zuse])
+    uid = np.unique(randcat.id_input[zuse[st]])
+
+    a, b = esutil.numpy_util.match(redmapper_cat.mem_match_id, uid)
+
+    if b.size < uid.size:
+        raise RuntimeError("IDs in randcat do not match those of corresponding redmapper catalog.")
+
+    a, b = esutil.numpy_util.match(redmapper_cat.mem_match_id, randcat.id_input[zuse])
+
+    if config.select_scaleval:
+        luse, = np.where((redmapper_cat.Lambda[a]/redmapper_cat.scaleval[a] > minlambda) &
+                         (redmapper_cat.Lambda[a] > lambdabin[0]) &
+                         (redmapper_cat.Lambda[a] <= lambdabin[1]))
+    else:
+        luse, = np.where((redmapper_cat.Lambda[a] > minlambda) &
+                         (redmapper_cat.Lambda[a] > lambdabin[0]) &
+                         (redmapper_cat.Lambda[a] <= lambdabin[1]))
+
+    if luse.size == 0:
+        raise RuntimeError("No random points in specified richness range %0.2f < lambda < %0.2f and lambda > %.2f" %
+                           (lambdabin[0], lambdabin[1], minlambda))
+
+    alluse = zuse[b[luse]]
+
+    randpoints = Catalog.zeros(luse.size, dtype=[('ra', 'f8'),
+                                                 ('dec', 'f8'),
+                                                 ('ztrue', 'f4'),
+                                                 ('lambda_in', 'f4'),
+                                                 ('avg_lambdaout', 'f4'),
+                                                 ('weight', 'f4')])
+    randpoints.ra = randcat.ra[alluse]
+    randpoints.dec = randcat.dec[alluse]
+    randpoints.ztrue = randcat.z[alluse]
+    randpoints.lambda_in = randcat.lambda_in[alluse]
+    randpoints.avg_lambdaout = randcat.lambda_in[alluse]
+
+    h, rev = esutil.stat.histogram(randcat.id_input[alluse], rev=True)
+    ok, = np.where(h > 0)
+
+    for i in ok:
+        i1a = rev[rev[i]: rev[i + 1]]
+
+        if config.select_scaleval:
+            gd, = np.where((randcat.lambda_in[alluse[i1a]]/randcat.scaleval[alluse[i1a]] > minlambda) &
+                           (randcat.maskfrac[alluse[i1a]] < config.max_maskfrac) &
+                           (randcat.lambda_in[alluse[i1a]] > lambdabin[0]) &
+                           (randcat.lambda_in[alluse[i1a]] <= lambdabin[1]))
         else:
-            self.vlim_lstar = vlim_lstar
+            gd, = np.where((randcat.lambda_in[alluse[i1a]] > minlambda) &
+                           (randcat.maskfrac[alluse[i1a]] < config.max_maskfrac) &
+                           (randcat.lambda_in[alluse[i1a]] > lambdabin[0]) &
+                           (randcat.lambda_in[alluse[i1a]] <= lambdabin[1]))
 
-        if vlim_mask is None:
-            self.vlim_mask = VolumeLimitMask(self.config, self.vlim_lstar)
-        else:
-            self.vlim_mask = vlim_mask
+        if gd.size > 0:
+            randpoints.weight[i1a[gd]] = float(i1a.size)/float(gd.size)
 
-        if redmapper_cat is None:
-            self.redmapper_cat = ClusterCatalog.from_fits_file(self.config.catfile)
-        else:
-            self.redmapper_cat = redmapper_cat
+    # And only save the randpoints with weight > 0.0
+    use, = np.where(randpoints.weight > 0.0)
 
-    def weight_randoms(self, minlambda, zrange=None, lambdabin=None):
-        """
-        Compute random weights.
+    fname_base = 'weighted_randoms_%s_%s_%s' % (zname, lamname, vlimname)
+    randfile_out = config.redmapper_filename(fname_base, withversion=True)
 
-        Parameters
-        ----------
-        minlambda : `float`
-           Minimum lambda to use in computations
-        zrange : `np.ndarray`, optional
-           2-element list of redshift range.  Default is full range.
-        lambdabin : `np.ndarray`, optional
-           2-element list of lambda range.  Default is full range.
-        """
-        if zrange is None:
-            zrange = np.array([self.config.zrange[0], self.config.zrange[1]])
+    randpoints.to_fits_file(randfile_out, indices=use)
 
-        zname = 'z%03d-%03d' % (int(self.config.zrange[0]*100),
-                                int(self.config.zrange[1]*100))
-        vlimname = 'vl%02d' % (int(self.vlim_lstar*10))
-        if lambdabin is None:
-            lamname = 'lgt%03d' % (int(minlambda))
-            lambdabin = np.array([0.0, 1000.0])
-        else:
-            lamname = 'lgt%03d_l%03d-%03d' % (int(minlambda), int(lambdabin[0]), int(lambdabin[1]))
+    # And now we need to compute the associated area.
 
-        zuse, = np.where((self.randcat.z > zrange[0]) &
-                         (self.randcat.z < zrange[1]))
+    # area = full_area(z < zmax) * (P/(P+Q)) where
+    #   P = number of good points with z < zmax
+    #   Q = number of bad points with z < zmax
 
-        if zuse.size == 0:
-            raise RuntimeError("No random points in specified redshift range %.2f < z < %.2f" %
-                               (zrange[0], zrange[1]))
+    # get the default area structure
 
-        st = np.argsort(self.randcat.id_input[zuse])
-        uid = np.unique(self.randcat.id_input[zuse[st]])
+    astr = get_volume_limit_areas(vlim_mask)
 
-        a, b = esutil.numpy_util.match(self.redmapper_cat.mem_match_id, uid)
+    # Make the fitting nodes
+    nodes = make_nodes(config.zrange, config.area_nodesize)
 
-        if b.size < uid.size:
-            raise RuntimeError("IDs in randcat do not match those of corresponding redmapper catalog.")
+    zbinsize = config.area_coarsebin
+    zbins = np.arange(config.zrange[0], config.zrange[1], zbinsize)
 
-        a, b = esutil.numpy_util.match(self.redmapper_cat.mem_match_id, self.randcat.id_input[zuse])
+    st = np.argsort(randcat.z[alluse])
+    ind1 = np.searchsorted(randcat.z[alluse[st]], zbins)
+    if config.select_scaleval:
+        gd, = np.where((randcat.lambda_in[alluse[st]]/randcat.scaleval[alluse[st]] > minlambda) &
+                       (randcat.maskfrac[alluse[st]] < config.max_maskfrac) &
+                       (randcat.lambda_in[alluse[st]] > lambdabin[0]) &
+                       (randcat.lambda_in[alluse[st]] < lambdabin[1]))
+    else:
+        gd, = np.where((randcat.lambda_in[alluse[st]] > minlambda) &
+                       (randcat.maskfrac[alluse[st]] < config.max_maskfrac) &
+                       (randcat.lambda_in[alluse[st]] > lambdabin[0]) &
+                       (randcat.lambda_in[alluse[st]] < lambdabin[1]))
+    ind2 = np.searchsorted(randcat.z[alluse[st[gd]]], zbins)
 
-        if self.config.select_scaleval:
-            luse, = np.where((self.redmapper_cat.Lambda[a]/self.redmapper_cat.scaleval[a] > minlambda) &
-                             (self.redmapper_cat.Lambda[a] > lambdabin[0]) &
-                             (self.redmapper_cat.Lambda[a] <= lambdabin[1]))
-        else:
-            luse, = np.where((self.redmapper_cat.Lambda[a] > minlambda) &
-                             (self.redmapper_cat.Lambda[a] > lambdabin[0]) &
-                             (self.redmapper_cat.Lambda[a] <= lambdabin[1]))
+    xvals = (zbins[0: -2] + zbins[1: -1])/2.
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        yvals = np.nan_to_num(ind2[1: -1].astype(np.float64) / ind1[1: -1].astype(np.float64))
 
-        if luse.size == 0:
-            raise RuntimeError("No random points in specified richness range %0.2f < lambda < %0.2f and lambda > %.2f" %
-                               (lambdabin[0], lambdabin[1], minlambda))
+    p0 = np.ones(nodes.size)
+    # Do an extra fit here for stability
+    pars0 = fit_med_z(nodes, xvals, yvals, p0)
+    pars = fit_med_z(nodes, xvals, yvals, pars0)
 
-        alluse = zuse[b[luse]]
+    y2 = cubic_spline_compute_y2(nodes, pars)
+    corrs = np.clip(cubic_spline_interpolate(astr.z, nodes, pars, y2), 0.0, 1.0)
+    astr.area = corrs*astr.area
 
-        randpoints = Catalog.zeros(luse.size, dtype=[('ra', 'f8'),
-                                                     ('dec', 'f8'),
-                                                     ('ztrue', 'f4'),
-                                                     ('lambda_in', 'f4'),
-                                                     ('avg_lambdaout', 'f4'),
-                                                     ('weight', 'f4')])
-        randpoints.ra = self.randcat.ra[alluse]
-        randpoints.dec = self.randcat.dec[alluse]
-        randpoints.ztrue = self.randcat.z[alluse]
-        randpoints.lambda_in = self.randcat.lambda_in[alluse]
-        randpoints.avg_lambdaout = self.randcat.lambda_in[alluse]
+    areafile_out = config.redmapper_filename(fname_base + '_area', withversion=True)
+    astr.to_fits_file(areafile_out)
 
-        h, rev = esutil.stat.histogram(self.randcat.id_input[alluse], rev=True)
-        ok, = np.where(h > 0)
-
-        for i in ok:
-            i1a = rev[rev[i]: rev[i + 1]]
-
-            if self.config.select_scaleval:
-                gd, = np.where((self.randcat.lambda_in[alluse[i1a]]/self.randcat.scaleval[alluse[i1a]] > minlambda) &
-                               (self.randcat.maskfrac[alluse[i1a]] < self.config.max_maskfrac) &
-                               (self.randcat.lambda_in[alluse[i1a]] > lambdabin[0]) &
-                               (self.randcat.lambda_in[alluse[i1a]] <= lambdabin[1]))
-            else:
-                gd, = np.where((self.randcat.lambda_in[alluse[i1a]] > minlambda) &
-                               (self.randcat.maskfrac[alluse[i1a]] < self.config.max_maskfrac) &
-                               (self.randcat.lambda_in[alluse[i1a]] > lambdabin[0]) &
-                               (self.randcat.lambda_in[alluse[i1a]] <= lambdabin[1]))
-
-            if gd.size > 0:
-                randpoints.weight[i1a[gd]] = float(i1a.size)/float(gd.size)
-
-        # And only save the randpoints with weight > 0.0
-        use, = np.where(randpoints.weight > 0.0)
-
-        fname_base = 'weighted_randoms_%s_%s_%s' % (zname, lamname, vlimname)
-        randfile_out = self.config.redmapper_filename(fname_base, withversion=True)
-
-        randpoints.to_fits_file(randfile_out, indices=use)
-
-        # And now we need to compute the associated area.
-
-        # area = full_area(z < zmax) * (P/(P+Q)) where
-        #   P = number of good points with z < zmax
-        #   Q = number of bad points with z < zmax
-
-        # get the default area structure
-
-        astr = self.vlim_mask.get_areas()
-
-        # Make the fitting nodes
-        nodes = make_nodes(self.config.zrange, self.config.area_nodesize)
-
-        zbinsize = self.config.area_coarsebin
-        zbins = np.arange(self.config.zrange[0], self.config.zrange[1], zbinsize)
-
-        st = np.argsort(self.randcat.z[alluse])
-        ind1 = np.searchsorted(self.randcat.z[alluse[st]], zbins)
-        if self.config.select_scaleval:
-            gd, = np.where((self.randcat.lambda_in[alluse[st]]/self.randcat.scaleval[alluse[st]] > minlambda) &
-                           (self.randcat.maskfrac[alluse[st]] < self.config.max_maskfrac) &
-                           (self.randcat.lambda_in[alluse[st]] > lambdabin[0]) &
-                           (self.randcat.lambda_in[alluse[st]] < lambdabin[1]))
-        else:
-            gd, = np.where((self.randcat.lambda_in[alluse[st]] > minlambda) &
-                           (self.randcat.maskfrac[alluse[st]] < self.config.max_maskfrac) &
-                           (self.randcat.lambda_in[alluse[st]] > lambdabin[0]) &
-                           (self.randcat.lambda_in[alluse[st]] < lambdabin[1]))
-        ind2 = np.searchsorted(self.randcat.z[alluse[st[gd]]], zbins)
-
-        xvals = (zbins[0: -2] + zbins[1: -1])/2.
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore")
-            yvals = np.nan_to_num(ind2[1: -1].astype(np.float64) / ind1[1: -1].astype(np.float64))
-
-        fitter = MedZFitter(nodes, xvals, yvals)
-        p0 = np.ones(nodes.size)
-        # Do an extra fit here for stability
-        pars0 = fitter.fit(p0)
-        pars = fitter.fit(pars0)
-
-        spl = CubicSpline(nodes, pars)
-        corrs = np.clip(spl(astr.z), 0.0, 1.0)
-        astr.area = corrs*astr.area
-
-        areafile_out = self.config.redmapper_filename(fname_base + '_area', withversion=True)
-        astr.to_fits_file(areafile_out)
-
-        return (randfile_out, areafile_out)
+    return (randfile_out, areafile_out)

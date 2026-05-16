@@ -19,6 +19,5 @@ if __name__ == '__main__':
 
     config = redmapper.Configuration(args.configfile)
 
-    generateRandoms = redmapper.GenerateRandoms(config)
-    generateRandoms.generate_randoms(args.nrands)
+    redmapper.generate_randoms(config, args.nrands)
 

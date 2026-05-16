@@ -24,5 +24,4 @@ if __name__ == '__main__':
     else:
         vlim_lstars = args.vlim_lstars
 
-    consolidate = redmapper.pipeline.RedmapperConsolidateTask(args.configfile, lambda_cuts=args.lambda_cuts, vlim_lstars=vlim_lstars)
-    consolidate.run()
+    redmapper.pipeline.run_redmapper_consolidate_task(args.configfile, lambda_cuts=args.lambda_cuts, vlim_lstars=vlim_lstars)
